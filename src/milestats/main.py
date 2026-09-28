@@ -558,6 +558,54 @@ def etichetta_bucket_discreti(bucket_list, time_bucket_min, distance_bucket_m):
     return bucket_list
 
 
+# Fasce fisse di passo (min/km) da 30 secondi, dalla più lenta (indice 0)
+# alla più veloce (indice 6): (soglia_minima, soglia_massima_esclusa,
+# etichetta). Le fasce sono contigue, quindi ogni passo in [0, 7:30) min/km
+# ricade in esattamente una di esse.
+CATEGORIE_PASSO = [
+    (7.0, 7.5, "7:00-7:29"),
+    (6.5, 7.0, "6:30-6:59"),
+    (6.0, 6.5, "6:00-6:29"),
+    (5.5, 6.0, "5:30-5:59"),
+    (5.0, 5.5, "5:00-5:29"),
+    (4.5, 5.0, "4:30-4:59"),
+    (0.0, 4.5, "<4:30"),
+]
+
+
+def categoria_passo(pace_min_km):
+    """
+    Etichetta della fascia fissa di passo a cui appartiene pace_min_km
+    (minuti/km, come ritornato da ms_a_pace), nello stesso formato
+    NNN_etichetta usato per gli altri bucket discreti (ordinabile anche
+    come testo): '000_7:00-7:29' (la più lenta delle fasce definite) fino a
+    '006_<4:30' (la più veloce). A differenza di time_bucket_idx e
+    distance_bucket_idx, qui i confini sono fissi (non parametrizzabili da
+    CLI). Un passo più lento di 7:30 min/km (fuori da tutte le fasce
+    definite) vale '999_>=7:30'; un passo non definito (velocità nulla, es.
+    un bucket fermo) vale 'N/D'.
+    """
+    if pace_min_km is None:
+        return "N/D"
+    for idx, (minimo, massimo, etichetta) in enumerate(CATEGORIE_PASSO):
+        if minimo <= pace_min_km < massimo:
+            return f"{idx:03d}_{etichetta}"
+    return "999_>=7:30"
+
+
+def etichetta_categoria_passo(bucket_list, mode):
+    """
+    Aggiunge a ogni bucket fine il campo pace_categoria (vedi
+    categoria_passo), calcolato sulla stessa fonte di velocità usata per
+    'Dist. (m)' del bucket: ufficiale in modalità 's'/'a', haversine in 'h'
+    (stesso criterio di aggrega_per_bucket_temporale).
+    """
+    for b in bucket_list:
+        speed_ms = b['speed_haversine_bucket_ms'] if mode == 'h' else b['speed_ufficiale_bucket_ms']
+        b['pace_categoria'] = categoria_passo(ms_a_pace(speed_ms))
+    return bucket_list
+
+
 def raggruppa_per_bucket_discreto(bucket_list, campo_idx, mode):
     """
     Raggruppa i bucket fini per l'etichetta discreta campo_idx
@@ -705,9 +753,10 @@ def righe_export(bucket_list, mode, id_attivita):
     """
     Costruisce (intestazione, righe) per l'export. I valori sono NUMERICI
     (non stringhe formattate) così si aprono correttamente in Excel, tranne
-    time_bucket_idx e distance_bucket_idx che sono testo per costruzione
-    (vedi formatta_etichetta_bucket), pensati per un pivot/raggruppamento
-    a valle, non per un calcolo numerico:
+    time_bucket_idx, distance_bucket_idx e pace_categoria che sono testo
+    per costruzione (vedi formatta_etichetta_bucket e categoria_passo),
+    pensati per un pivot/raggruppamento a valle, non per un calcolo
+    numerico:
       id_attivita, timestamp (inizio bucket), ts_punto/lat/lon (primo punto
       reale del bucket), dim_bucket_s (T), n_punti, dist_m, dist_cum_m,
       tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s (cumulati
@@ -715,9 +764,10 @@ def righe_export(bucket_list, mode, id_attivita):
       precedente + valore della riga corrente), time_bucket_idx e
       distance_bucket_idx (etichetta testuale, ordinabile, del bucket
       "macro" di tempo/distanza a cui appartiene la riga, es.
-      '003_10-15 min'; vedi etichetta_bucket_discreti), e per ogni fonte
-      della modalità speed_<fonte>_kmh e pace_<fonte>_min_km (minuti per
-      km, decimali).
+      '003_10-15 min'; vedi etichetta_bucket_discreti), pace_categoria
+      (fascia fissa di passo, da '000_7:00-7:29' a '006_<4:30', vedi
+      categoria_passo), e per ogni fonte della modalità speed_<fonte>_kmh
+      e pace_<fonte>_min_km (minuti per km, decimali).
     """
     campi = {
         'dev': 'speed_device_media_ms',
@@ -729,7 +779,7 @@ def righe_export(bucket_list, mode, id_attivita):
     intestazione = ['id_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
                     'dim_bucket_s', 'n_punti', 'dist_m', 'dist_cum_m',
                     'tempo_bucket_s', 'tempo_cum_s',
-                    'time_bucket_idx', 'distance_bucket_idx']
+                    'time_bucket_idx', 'distance_bucket_idx', 'pace_categoria']
     for sg in sigle:
         intestazione += [f'speed_{sg}_kmh', f'pace_{sg}_min_km']
 
@@ -743,7 +793,7 @@ def righe_export(bucket_list, mode, id_attivita):
             b['n_punti'], round(b['distanza_m'], 3),
             round(b['dist_cum_m'], 3), round(b['tempo_attivo_s'], 3),
             round(b['tempo_cum_s'], 3),
-            b['time_bucket_idx'], b['distance_bucket_idx'],
+            b['time_bucket_idx'], b['distance_bucket_idx'], b['pace_categoria'],
         ]
         for sg in sigle:
             v = b[campi[sg]]
@@ -981,6 +1031,7 @@ def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
     bucket_list = etichetta_bucket_discreti(
         bucket_list, time_bucket_min, distance_bucket_m,
     )
+    bucket_list = etichetta_categoria_passo(bucket_list, mode)
 
     if id_attivita_arg:
         id_attivita, fonte_id = id_attivita_arg, "argomento --id"

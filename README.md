@@ -80,6 +80,29 @@ Bucket               Dist. (m)   Tempo (s)   Speed dev. (km/h)   Passo dev.    S
 ...
 ```
 
+## Categoria di passo (`pace_categoria`)
+
+Terza etichetta di riga, sempre presente nell'export, ma con confini
+**fissi** (non parametrizzabili da CLI): la fascia da 30 secondi in cui
+cade il passo del bucket (calcolato sulla stessa fonte di "Dist. (m)":
+ufficiale in `s`/`a`, haversine in `h`), dalla più lenta alla più veloce:
+
+| Indice | Fascia | Etichetta |
+|---|---|---|
+| 0 | 7:00–7:29 min/km | `000_7:00-7:29` |
+| 1 | 6:30–6:59 min/km | `001_6:30-6:59` |
+| 2 | 6:00–6:29 min/km | `002_6:00-6:29` |
+| 3 | 5:30–5:59 min/km | `003_5:30-5:59` |
+| 4 | 5:00–5:29 min/km | `004_5:00-5:29` |
+| 5 | 4:30–4:59 min/km | `005_4:30-4:59` |
+| 6 | più veloce di 4:30 min/km | `006_<4:30` |
+
+Un passo più lento di 7:30 min/km (fuori da tutte le fasce sopra) vale
+`999_>=7:30`; un passo non definito (velocità nulla, es. un bucket fermo)
+vale `N/D`. Come `time_bucket_idx`/`distance_bucket_idx`, è pensata per
+raggruppare/pivotare il dettaglio a valle, non per un'aggregazione fatta
+dal tool.
+
 ## Punto del bucket, ID attività ed export
 
 **Punto del bucket.** Ogni riga riporta `lat`/`lon` del **primo punto reale**
@@ -118,10 +141,11 @@ Esempio: `1790417339_20260926T092056_20260926T100852_20260928T062546.csv`.
 Colonne: `id_attivita`, `timestamp` (inizio bucket), `ts_punto`, `lat`, `lon`,
 `dim_bucket_s`, `n_punti`, `dist_m`, `dist_cum_m`, `tempo_bucket_s`,
 `tempo_cum_s`, `time_bucket_idx`, `distance_bucket_idx` (testo nel formato
-`NNN_inizio-fine unità`, vedi sezione dedicata sopra), poi per ogni
-fonte della modalità `speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km,
-numerico decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri (tranne
-le due colonne `_bucket_idx`, testuali per costruzione), non testo formattato.
+`NNN_inizio-fine unità`, vedi sezione dedicata sopra), `pace_categoria`
+(testo, vedi sezione dedicata), poi per ogni fonte della modalità
+`speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km, numerico
+decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri (tranne le tre
+colonne testuali sopra), non testo formattato.
 
 ## Elaborazione in batch (`--process-all`)
 

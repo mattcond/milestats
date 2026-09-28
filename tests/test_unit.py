@@ -3,6 +3,7 @@ from datetime import datetime, timezone
 import pytest
 
 from milestats.main import (
+    categoria_passo,
     formatta_etichetta_bucket,
     formatta_pace,
     haversine,
@@ -75,6 +76,30 @@ def test_formatta_etichetta_bucket_secondo_bucket_distanza():
 def test_formatta_etichetta_bucket_zero_padding_a_tre_cifre():
     assert formatta_etichetta_bucket(9, 5, 'min') == "010_45-50 min"
     assert formatta_etichetta_bucket(98, 5, 'min') == "099_490-495 min"
+
+
+def test_categoria_passo_none():
+    assert categoria_passo(None) == "N/D"
+
+
+@pytest.mark.parametrize("pace_min_km, atteso", [
+    (7.0, "000_7:00-7:29"),
+    (7 + 29 / 60, "000_7:00-7:29"),      # 7:29, ancora nella fascia 0
+    (6.5, "001_6:30-6:59"),
+    (6.0, "002_6:00-6:29"),
+    (5.5, "003_5:30-5:59"),
+    (5.0, "004_5:00-5:29"),
+    (4.5, "005_4:30-4:59"),
+    (4.5 - 1e-9, "006_<4:30"),           # appena sotto 4:30
+    (0.0, "006_<4:30"),
+])
+def test_categoria_passo_fasce_definite(pace_min_km, atteso):
+    assert categoria_passo(pace_min_km) == atteso
+
+
+def test_categoria_passo_piu_lento_della_fascia_0():
+    assert categoria_passo(7.5) == "999_>=7:30"
+    assert categoria_passo(12.0) == "999_>=7:30"
 
 
 def test_nome_file_export_sanifica_caratteri_non_validi():

@@ -4,6 +4,7 @@ from milestats.main import (
     aggrega_per_bucket_temporale,
     calcola_velocita,
     etichetta_bucket_discreti,
+    etichetta_categoria_passo,
     filtra_per_finestre,
     raggruppa_per_bucket_discreto,
 )
@@ -79,3 +80,25 @@ def test_raggruppa_per_bucket_discreto_somma_correttamente(punti_sintetici):
     # gruppo 1: 4 bucket fini, tutti con un delta di 3 m
     assert gruppi[1]['distanza_m'] == pytest.approx(12.0)
     assert gruppi[1]['speed_ufficiale_ms'] == pytest.approx(3.0)
+
+
+def test_etichetta_categoria_passo_usa_la_fonte_giusta_per_modalita(punti_sintetici):
+    # distanza ufficiale costante a 3 m/s -> passo ~5:33 min/km, dentro la
+    # fascia 5:30-5:59 (indice 3); il primissimo bucket (primo punto
+    # dell'attività, velocità nulla) vale N/D
+    _, bucket_list_uff = _pipeline(punti_sintetici, t_secondi=1, mode='s')
+    bucket_list_uff = etichetta_categoria_passo(bucket_list_uff, 's')
+    assert bucket_list_uff[0]['pace_categoria'] == "N/D"
+    assert all(b['pace_categoria'] == "003_5:30-5:59" for b in bucket_list_uff[1:])
+
+    # la posizione GPS sintetica avanza invece di ~2.38 m/s via haversine
+    # (a questa latitudine 0.00003° di longitudine sono meno di 3 m): passo
+    # ~7:00 min/km, fascia 0. Conferma che la modalità 'h' usa davvero la
+    # fonte haversine e non quella ufficiale. I primi due bucket sono N/D:
+    # il primo per velocità nulla (primo punto dell'attività), il secondo
+    # perché il delta haversine che parte dal primo punto di un segmento
+    # viene scartato (vedi calcola_velocita).
+    _, bucket_list_hav = _pipeline(punti_sintetici, t_secondi=1, mode='h')
+    bucket_list_hav = etichetta_categoria_passo(bucket_list_hav, 'h')
+    assert [b['pace_categoria'] for b in bucket_list_hav[:2]] == ["N/D", "N/D"]
+    assert all(b['pace_categoria'] == "000_7:00-7:29" for b in bucket_list_hav[2:])
