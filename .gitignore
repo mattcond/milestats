@@ -1,0 +1,6 @@
+__pycache__/
+*.pyc
+
+# cartelle generate da --process-all
+data/output/
+data/processed/

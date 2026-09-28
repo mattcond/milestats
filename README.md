@@ -121,6 +121,35 @@ fonte della modalità `speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km
 numerico decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri, non testo
 formattato.
 
+## Elaborazione in batch (`--process-all`)
+
+Per elaborare in un colpo solo tutti i file `.fit` presenti in `data/`
+(senza indicare `percorso_fit`):
+
+```bash
+uv run milestats --process-all
+uv run milestats --process-all -m a -e xlsx --time-bucket 10 --distance-bucket 1000
+```
+
+Per ogni file trovato in `data/` (non ricorsivo):
+
+1. viene elaborato come un file singolo (stessi `-m`/`-t`/`--time-bucket`/
+   `--distance-bucket` passati sulla riga di comando);
+2. l'output viene sempre esportato, con il nome standard, in `data/output/`
+   (creata se manca); se `-e`/`--export` non è specificato l'export usa
+   `csv`;
+3. il file `.fit` elaborato con successo viene spostato in `data/processed/`
+   (creata se manca).
+
+Un file che fallisce l'elaborazione (es. non è un `.fit` valido, o non ha
+record dentro le finestre attive) viene segnalato su stderr e **lasciato in
+`data/`**, senza interrompere l'elaborazione degli altri file. Al termine
+viene stampato un riepilogo con il numero di file elaborati e con errori.
+
+`percorso_fit` e `--id` non sono compatibili con `--process-all` (l'id
+attività viene sempre ricavato dal file, per evitare collisioni di nome tra
+più file esportati).
+
 - `dim_bucket_s`: dimensione del bucket in secondi, cioè il valore di `-t`
   (il numero di punti campionati è in `n_punti`).
 - `dist_cum_m`: distanza cumulata dall'inizio **fino alla fine del bucket
@@ -231,7 +260,8 @@ posizione.
 uv sync
 ```
 
-Questo crea il virtualenv e installa `fitparse` (lettura .fit) e `openpyxl` (export Excel).
+Questo crea il virtualenv e installa `fitparse` (lettura .fit), `openpyxl`
+(export Excel) e `pytest` (dipendenza di sviluppo, per i test).
 
 ## Uso
 
@@ -257,3 +287,17 @@ uv run milestats /percorso/al/tuo/file.fit -t 15
 Riepilogo generale (distanza totale ufficiale, tempo totale, velocità e
 passo medi complessivi), seguito da una tabella con una riga per bucket e
 le tre coppie speed/passo descritte sopra.
+
+## Test
+
+```bash
+uv run pytest
+```
+
+Suite snella (~30 test, ~10 secondi): funzioni pure (haversine, conversioni
+di velocità/passo, naming dell'export) con dati sintetici che non richiedono
+di leggere un file `.fit`; aggregazione per bucket ed etichette
+tempo/distanza sulla stessa base sintetica; export CSV/Excel; alcuni test di
+integrazione sul file di esempio con bucket grandi (`-t 600`) per restare
+veloci pur passando dalla pipeline completa, incluso `--process-all`. Gira
+automaticamente su push/PR (`.github/workflows/tests.yml`).

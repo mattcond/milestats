@@ -121,6 +121,7 @@ import calendar
 import csv
 import hashlib
 import re
+import shutil
 import sys
 from datetime import datetime, timedelta, timezone
 from math import radians, sin, cos, sqrt, atan2
@@ -785,6 +786,185 @@ def formatta_pace(min_per_km):
 
 
 # ----------------------------------------------------------------------
+# Elaborazione di un singolo file .fit (stampa + export opzionale)
+# ----------------------------------------------------------------------
+def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
+            id_attivita_arg, export_formato, output_dir):
+    """
+    Esegue l'analisi completa di un file .fit (lettura, calcolo velocità,
+    aggregazione per bucket, stampa a schermo) e, se export_formato non è
+    None, esporta la tabella per bucket in output_dir. Ritorna il percorso
+    del file esportato, o None se export_formato è None.
+
+    Solleva ValueError se il file non contiene record validi o se nessun
+    record cade dentro le finestre attive del timer, così il chiamante
+    (elaborazione di un singolo file o di più file con --process-all) può
+    decidere come reagire senza terminare il processo.
+    """
+    punti = leggi_record(percorso_fit)
+    if not punti:
+        raise ValueError("Nessun record valido trovato nel file.")
+    n_punti_file = len(punti)
+
+    finestre = leggi_finestre_attive(percorso_fit)
+    punti = filtra_per_finestre(punti, finestre)
+    if not punti:
+        raise ValueError("Nessun record cade dentro le finestre attive del timer.")
+
+    punti = calcola_velocita(punti, mode)
+    bucket_list = aggrega_per_bucket_temporale(punti, intervallo, mode)
+    bucket_list = etichetta_bucket_discreti(
+        bucket_list, time_bucket_min * 60, distance_bucket_m,
+    )
+
+    if id_attivita_arg:
+        id_attivita, fonte_id = id_attivita_arg, "argomento --id"
+    else:
+        id_attivita, fonte_id = leggi_id_attivita(percorso_fit)
+
+    distanza_totale = sum(b['distanza_m'] for b in bucket_list)
+    # tempo a timer attivo: somma dei dt tra punti consecutivi dello stesso
+    # segmento (le pause valgono 0, vedi calcola_velocita)
+    tempo_totale = sum(p['dt_s'] for p in punti)
+    # tempo su cui è calcolata la distanza della fonte scelta (in modalità 'h'
+    # esclude i secondi dei delta haversine scartati)
+    tempo_fonte = sum(b['tempo_s'] for b in bucket_list)
+    speed_media_globale_ms = distanza_totale / tempo_fonte if tempo_fonte > 0 else 0.0
+    passo_medio_globale = ms_a_pace(speed_media_globale_ms)
+
+    if finestre is None:
+        print("Eventi timer: nessuno nel file, uso tutti i record")
+    else:
+        print(f"Eventi timer: {len(finestre)} finestra/e attiva/e")
+        for i, (a, b) in enumerate(finestre, 1):
+            fine = str(b) if b is not None else "(aperta, fino a fine file)"
+            print(f"  {i}. {a} -> {fine}")
+    etichette = {
+        's': "standard (distanza ufficiale del dispositivo)",
+        'h': "haversine (posizioni GPS)",
+        'a': "all (dispositivo, haversine e distanza ufficiale a confronto)",
+    }
+    print(f"Modalità: {mode} - {etichette[mode]}")
+    print(f"ID attività: {id_attivita} (fonte: {fonte_id})")
+    print(f"Punti letti (GPS+distanza uniti per timestamp): {n_punti_file}, "
+          f"dentro le finestre: {len(punti)}")
+    print(f"Bucket da {intervallo:g}s: {len(bucket_list)}")
+    fonte_dist = "haversine" if mode == 'h' else "distanza ufficiale"
+    print(f"Distanza totale (da {fonte_dist}): {distanza_totale:.1f} m")
+    print(f"Tempo totale: {tempo_totale:.0f} s")
+    if abs(tempo_fonte - tempo_totale) > 0.5:
+        print(f"  (velocità calcolata su {tempo_fonte:.0f} s: esclusi i secondi dei delta haversine scartati)")
+    print(f"Velocità media (da distanza/tempo totali): {ms_a_kmh(speed_media_globale_ms):.2f} km/h")
+    print(f"Passo medio: {formatta_pace(passo_medio_globale)}")
+    print()
+
+    print(f"Dettaglio per bucket (bucket da {intervallo:g}s):")
+    if mode == 'a':
+        header = (
+            f"{'Timestamp':<21} {'Lat':<11} {'Lon':<11} {'Dim. (s)':<9} {'N punti':<9} "
+            f"{'Dist. (m)':<11} {'Dist. cum. (m)':<15} {'Tempo (s)':<11} {'Tempo cum. (s)':<15} "
+            f"{'Speed dev. (km/h)':<19} {'Passo dev.':<13} "
+            f"{'Speed hav. (km/h)':<19} {'Passo hav.':<13} "
+            f"{'Speed uff. (km/h)':<19} {'Passo uff.':<13}"
+        )
+    else:
+        sigla = 'hav.' if mode == 'h' else 'uff.'
+        header = (
+            f"{'Timestamp':<21} {'Lat':<11} {'Lon':<11} {'Dim. (s)':<9} {'N punti':<9} "
+            f"{'Dist. (m)':<11} {'Dist. cum. (m)':<15} {'Tempo (s)':<11} {'Tempo cum. (s)':<15} "
+            f"{'Speed ' + sigla + ' (km/h)':<19} {'Passo ' + sigla:<13}"
+        )
+    print(header)
+    # decimali mostrati per le distanze: abbastanza da rendere visibile che
+    # cumulato = cumulato precedente + distanza del bucket corrente
+    dec = 3 if mode == 'h' else 2
+    for b in bucket_list:
+        lat_txt = f"{b['lat']:.6f}" if b['lat'] is not None else "-"
+        lon_txt = f"{b['lon']:.6f}" if b['lon'] is not None else "-"
+        base = (f"{str(b['timestamp']):<21} {lat_txt:<11} {lon_txt:<11} "
+                f"{b['dim_bucket_s']:<9g} {b['n_punti']:<9} {b['distanza_m']:<11.{dec}f} "
+                f"{b['dist_cum_m']:<15.{dec}f} {b['tempo_attivo_s']:<11.0f} {b['tempo_cum_s']:<15.0f} ")
+        if mode == 'a':
+            pace_device = ms_a_pace(b['speed_device_media_ms'])
+            pace_hav = ms_a_pace(b['speed_haversine_bucket_ms'])
+            pace_uff = ms_a_pace(b['speed_ufficiale_bucket_ms'])
+            print(
+                base
+                + f"{ms_a_kmh(b['speed_device_media_ms']):<19.2f} {formatta_pace(pace_device):<13} "
+                + f"{ms_a_kmh(b['speed_haversine_bucket_ms']):<19.2f} {formatta_pace(pace_hav):<13} "
+                + f"{ms_a_kmh(b['speed_ufficiale_bucket_ms']):<19.2f} {formatta_pace(pace_uff):<13}"
+            )
+        else:
+            speed_ms = b['speed_haversine_bucket_ms'] if mode == 'h' else b['speed_ufficiale_bucket_ms']
+            print(base + f"{ms_a_kmh(speed_ms):<19.2f} {formatta_pace(ms_a_pace(speed_ms)):<13}")
+
+    stampa_analisi_bucket_discreti(bucket_list, mode, time_bucket_min, distance_bucket_m)
+
+    if export_formato is None:
+        return None
+
+    formato = "xlsx" if export_formato == "excel" else export_formato
+    nome = nome_file_export(
+        id_attivita,
+        punti[0]['timestamp'],       # primo record dell'attività
+        punti[-1]['timestamp'],      # ultimo record dell'attività
+        datetime.now(timezone.utc),  # momento dell'export
+    )
+    intestazione, righe = righe_export(bucket_list, mode, id_attivita)
+    percorso = esporta(intestazione, righe, formato, output_dir, nome)
+    print()
+    print(f"Esportato ({formato}, {len(righe)} righe): {percorso}")
+    return percorso
+
+
+# ----------------------------------------------------------------------
+# --process-all: elabora tutti i file .fit di data/, esporta in
+# data/output e sposta i .fit elaborati in data/processed
+# ----------------------------------------------------------------------
+def elabora_tutti(mode, intervallo, time_bucket_min, distance_bucket_m, export_formato):
+    """
+    Cerca tutti i file .fit in data/ (non ricorsivo), li elabora uno alla
+    volta con elabora() esportando sempre il risultato (formato csv se
+    export_formato non è specificato) in data/output, e sposta ogni file
+    .fit elaborato con successo in data/processed. Un file che fallisce
+    l'elaborazione (es. nessun record valido) viene segnalato e lasciato
+    in data/, così da non perdere l'originale.
+    """
+    cartella_data = Path("data")
+    cartella_output = cartella_data / "output"
+    cartella_processed = cartella_data / "processed"
+
+    file_fit = sorted(cartella_data.glob("*.fit"))
+    if not file_fit:
+        print(f"Nessun file .fit trovato in {cartella_data}/.", file=sys.stderr)
+        return
+
+    formato = "xlsx" if export_formato == "excel" else (export_formato or "csv")
+    n_ok, n_errori = 0, 0
+
+    for percorso in file_fit:
+        print(f"=== {percorso.name} ===")
+        try:
+            elabora(str(percorso), mode, intervallo, time_bucket_min, distance_bucket_m,
+                    None, formato, str(cartella_output))
+        except ValueError as e:
+            print(f"Errore: {e} File lasciato in {cartella_data}/.", file=sys.stderr)
+            n_errori += 1
+            print()
+            continue
+
+        cartella_processed.mkdir(parents=True, exist_ok=True)
+        destinazione = cartella_processed / percorso.name
+        shutil.move(str(percorso), str(destinazione))
+        print(f"Spostato in {destinazione}")
+        print()
+        n_ok += 1
+
+    print(f"Completato: {n_ok} file elaborati, {n_errori} con errori "
+          f"(su {len(file_fit)} trovati).")
+
+
+# ----------------------------------------------------------------------
 # Entry point
 # ----------------------------------------------------------------------
 def main():
@@ -794,7 +974,12 @@ def main():
                      "T secondi, confrontando velocità del dispositivo, haversine (GPS) "
                      "e distanza cumulativa ufficiale.",
     )
-    parser.add_argument("percorso_fit", help="Percorso del file .fit da analizzare")
+    parser.add_argument(
+        "percorso_fit",
+        nargs="?",
+        default=None,
+        help="Percorso del file .fit da analizzare (obbligatorio se non si usa --process-all)",
+    )
     parser.add_argument(
         "-t", "--intervallo",
         type=float,
@@ -845,6 +1030,14 @@ def main():
         help="Dimensione (metri) dei bucket di distanza discreti e ordinabili usati "
              "per l'analisi 'come ho performato dopo D metri' (default: 500)",
     )
+    parser.add_argument(
+        "--process-all",
+        action="store_true",
+        help="Elabora tutti i file .fit in data/, esporta l'output (nome standard) in "
+             "data/output/ e sposta ogni file .fit elaborato in data/processed/. In "
+             "questa modalità percorso_fit e --id non vanno indicati; se --export non "
+             "è specificato l'export usa csv",
+    )
     args = parser.parse_args()
     mode = args.mode
 
@@ -852,120 +1045,23 @@ def main():
         parser.error("--time-bucket deve essere maggiore di 0")
     if args.distance_bucket_m <= 0:
         parser.error("--distance-bucket deve essere maggiore di 0")
+    if args.process_all and args.percorso_fit:
+        parser.error("--process-all non accetta un percorso_fit esplicito")
+    if args.process_all and args.id_attivita:
+        parser.error("--id non è compatibile con --process-all")
+    if not args.process_all and not args.percorso_fit:
+        parser.error("specificare un percorso_fit oppure --process-all")
 
-    punti = leggi_record(args.percorso_fit)
-    if not punti:
-        print("Nessun record valido trovato nel file.", file=sys.stderr)
+    if args.process_all:
+        elabora_tutti(mode, args.intervallo, args.time_bucket_min, args.distance_bucket_m, args.export)
+        return
+
+    try:
+        elabora(args.percorso_fit, mode, args.intervallo, args.time_bucket_min,
+                args.distance_bucket_m, args.id_attivita, args.export, args.output_dir)
+    except ValueError as e:
+        print(str(e), file=sys.stderr)
         sys.exit(1)
-    n_punti_file = len(punti)
-
-    finestre = leggi_finestre_attive(args.percorso_fit)
-    punti = filtra_per_finestre(punti, finestre)
-    if not punti:
-        print("Nessun record cade dentro le finestre attive del timer.", file=sys.stderr)
-        sys.exit(1)
-
-    punti = calcola_velocita(punti, mode)
-    bucket_list = aggrega_per_bucket_temporale(punti, args.intervallo, mode)
-    bucket_list = etichetta_bucket_discreti(
-        bucket_list, args.time_bucket_min * 60, args.distance_bucket_m,
-    )
-
-    if args.id_attivita:
-        id_attivita, fonte_id = args.id_attivita, "argomento --id"
-    else:
-        id_attivita, fonte_id = leggi_id_attivita(args.percorso_fit)
-
-    distanza_totale = sum(b['distanza_m'] for b in bucket_list)
-    # tempo a timer attivo: somma dei dt tra punti consecutivi dello stesso
-    # segmento (le pause valgono 0, vedi calcola_velocita)
-    tempo_totale = sum(p['dt_s'] for p in punti)
-    # tempo su cui è calcolata la distanza della fonte scelta (in modalità 'h'
-    # esclude i secondi dei delta haversine scartati)
-    tempo_fonte = sum(b['tempo_s'] for b in bucket_list)
-    speed_media_globale_ms = distanza_totale / tempo_fonte if tempo_fonte > 0 else 0.0
-    passo_medio_globale = ms_a_pace(speed_media_globale_ms)
-
-    if finestre is None:
-        print("Eventi timer: nessuno nel file, uso tutti i record")
-    else:
-        print(f"Eventi timer: {len(finestre)} finestra/e attiva/e")
-        for i, (a, b) in enumerate(finestre, 1):
-            fine = str(b) if b is not None else "(aperta, fino a fine file)"
-            print(f"  {i}. {a} -> {fine}")
-    etichette = {
-        's': "standard (distanza ufficiale del dispositivo)",
-        'h': "haversine (posizioni GPS)",
-        'a': "all (dispositivo, haversine e distanza ufficiale a confronto)",
-    }
-    print(f"Modalità: {mode} - {etichette[mode]}")
-    print(f"ID attività: {id_attivita} (fonte: {fonte_id})")
-    print(f"Punti letti (GPS+distanza uniti per timestamp): {n_punti_file}, "
-          f"dentro le finestre: {len(punti)}")
-    print(f"Bucket da {args.intervallo:g}s: {len(bucket_list)}")
-    fonte_dist = "haversine" if mode == 'h' else "distanza ufficiale"
-    print(f"Distanza totale (da {fonte_dist}): {distanza_totale:.1f} m")
-    print(f"Tempo totale: {tempo_totale:.0f} s")
-    if abs(tempo_fonte - tempo_totale) > 0.5:
-        print(f"  (velocità calcolata su {tempo_fonte:.0f} s: esclusi i secondi dei delta haversine scartati)")
-    print(f"Velocità media (da distanza/tempo totali): {ms_a_kmh(speed_media_globale_ms):.2f} km/h")
-    print(f"Passo medio: {formatta_pace(passo_medio_globale)}")
-    print()
-
-    print(f"Dettaglio per bucket (bucket da {args.intervallo:g}s):")
-    if mode == 'a':
-        header = (
-            f"{'Timestamp':<21} {'Lat':<11} {'Lon':<11} {'Dim. (s)':<9} {'N punti':<9} "
-            f"{'Dist. (m)':<11} {'Dist. cum. (m)':<15} {'Tempo (s)':<11} {'Tempo cum. (s)':<15} "
-            f"{'Speed dev. (km/h)':<19} {'Passo dev.':<13} "
-            f"{'Speed hav. (km/h)':<19} {'Passo hav.':<13} "
-            f"{'Speed uff. (km/h)':<19} {'Passo uff.':<13}"
-        )
-    else:
-        sigla = 'hav.' if mode == 'h' else 'uff.'
-        header = (
-            f"{'Timestamp':<21} {'Lat':<11} {'Lon':<11} {'Dim. (s)':<9} {'N punti':<9} "
-            f"{'Dist. (m)':<11} {'Dist. cum. (m)':<15} {'Tempo (s)':<11} {'Tempo cum. (s)':<15} "
-            f"{'Speed ' + sigla + ' (km/h)':<19} {'Passo ' + sigla:<13}"
-        )
-    print(header)
-    # decimali mostrati per le distanze: abbastanza da rendere visibile che
-    # cumulato = cumulato precedente + distanza del bucket corrente
-    dec = 3 if mode == 'h' else 2
-    for b in bucket_list:
-        lat_txt = f"{b['lat']:.6f}" if b['lat'] is not None else "-"
-        lon_txt = f"{b['lon']:.6f}" if b['lon'] is not None else "-"
-        base = (f"{str(b['timestamp']):<21} {lat_txt:<11} {lon_txt:<11} "
-                f"{b['dim_bucket_s']:<9g} {b['n_punti']:<9} {b['distanza_m']:<11.{dec}f} "
-                f"{b['dist_cum_m']:<15.{dec}f} {b['tempo_attivo_s']:<11.0f} {b['tempo_cum_s']:<15.0f} ")
-        if mode == 'a':
-            pace_device = ms_a_pace(b['speed_device_media_ms'])
-            pace_hav = ms_a_pace(b['speed_haversine_bucket_ms'])
-            pace_uff = ms_a_pace(b['speed_ufficiale_bucket_ms'])
-            print(
-                base
-                + f"{ms_a_kmh(b['speed_device_media_ms']):<19.2f} {formatta_pace(pace_device):<13} "
-                + f"{ms_a_kmh(b['speed_haversine_bucket_ms']):<19.2f} {formatta_pace(pace_hav):<13} "
-                + f"{ms_a_kmh(b['speed_ufficiale_bucket_ms']):<19.2f} {formatta_pace(pace_uff):<13}"
-            )
-        else:
-            speed_ms = b['speed_haversine_bucket_ms'] if mode == 'h' else b['speed_ufficiale_bucket_ms']
-            print(base + f"{ms_a_kmh(speed_ms):<19.2f} {formatta_pace(ms_a_pace(speed_ms)):<13}")
-
-    stampa_analisi_bucket_discreti(bucket_list, mode, args.time_bucket_min, args.distance_bucket_m)
-
-    if args.export:
-        formato = "xlsx" if args.export == "excel" else args.export
-        nome = nome_file_export(
-            id_attivita,
-            punti[0]['timestamp'],       # primo record dell'attività
-            punti[-1]['timestamp'],      # ultimo record dell'attività
-            datetime.now(timezone.utc),  # momento dell'export
-        )
-        intestazione, righe = righe_export(bucket_list, mode, id_attivita)
-        percorso = esporta(intestazione, righe, formato, args.output_dir, nome)
-        print()
-        print(f"Esportato ({formato}, {len(righe)} righe): {percorso}")
 
 if __name__ == "__main__":
     main()
