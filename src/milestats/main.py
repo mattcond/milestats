@@ -98,6 +98,22 @@ più lenti di 20-40s/km rispetto al passo reale nei tratti veloci, non
 visibili nel confronto con il grafico dell'app. Il fix: la velocità del
 bucket si calcola ora come distanza_totale_bucket / tempo_totale_bucket,
 sia per haversine sia per la distanza ufficiale.
+
+Bucket discreti per l'analisi "come ho performato dopo X minuti / D metri"
+---------------------------------------------------------------------------
+Oltre al bucket fine di dettaglio (-t/--intervallo, in secondi), ogni riga
+riceve due etichette intere e ordinabili, indipendenti da -t:
+  - time_bucket_idx: a quale finestra da --time-bucket minuti (default 5)
+    di tempo ATTIVO appartiene l'inizio della riga (0 = 0-5 min, 1 = 5-10
+    min, ...);
+  - distance_bucket_idx: a quale finestra da --distance-bucket metri
+    (default 500) di distanza appartiene l'inizio della riga (0 = 0-500 m,
+    1 = 500-1000 m, ...).
+Sono incluse nell'export CSV/Excel per filtrare/raggruppare, e usate per
+stampare a schermo due tabelle di riepilogo (velocità/passo raggruppati per
+finestra, calcolati come distanza totale della finestra / tempo totale
+della finestra, non come media dei bucket fini) che rispondono direttamente
+a "come sono andato dopo X minuti" e "come sono andato dopo D metri".
 """
 
 import argparse
@@ -441,6 +457,14 @@ def aggrega_per_bucket_temporale(punti, t_secondi, mode='a'):
             'speed_device_media_ms': speed_device_media,
             'speed_haversine_bucket_ms': speed_haversine_bucket,
             'speed_ufficiale_bucket_ms': speed_ufficiale_bucket,
+            # totali "grezzi" del bucket per fonte, conservati per poter
+            # raggruppare più bucket fini (es. per time_bucket_idx /
+            # distance_bucket_idx) sommando distanza e tempo PRIMA di
+            # dividere, invece di mediare velocità già calcolate
+            'distanza_haversine_tot': distanza_haversine_tot,
+            'tempo_hav': tempo_hav,
+            'distanza_ufficiale_tot': distanza_ufficiale_tot,
+            'tempo_uff': tempo_uff,
         }
 
     for p in punti:
@@ -474,6 +498,127 @@ def aggrega_per_bucket_temporale(punti, t_secondi, mode='a'):
         b['tempo_cum_s'] = tempo_cum
 
     return bucket_list
+
+
+# ----------------------------------------------------------------------
+# Etichette discrete e ordinabili: bucket "macro" di tempo/distanza
+# ----------------------------------------------------------------------
+def etichetta_bucket_discreti(bucket_list, time_bucket_s, distance_bucket_m):
+    """
+    Aggiunge a ogni bucket fine (quello da -t/--intervallo) due etichette
+    intere, discrete e ordinabili:
+      - time_bucket_idx: indice del bucket "macro" da time_bucket_s secondi
+        a cui appartiene l'INIZIO del bucket fine (tempo attivo cumulato
+        prima del bucket, diviso time_bucket_s, troncato);
+      - distance_bucket_idx: indice del bucket "macro" da distance_bucket_m
+        metri a cui appartiene l'INIZIO del bucket fine (distanza cumulata
+        prima del bucket, divisa per distance_bucket_m, troncata).
+
+    Esempio: con time_bucket_s = 300 (5 min) un bucket fine che inizia al
+    minuto 7 di tempo attivo ha time_bucket_idx = 1 (finestra 5-10 min).
+    Le etichette permettono di raggruppare i bucket fini (vedi
+    raggruppa_per_bucket_discreto) per rispondere a "come ho performato
+    dopo X minuti / D metri", indipendentemente dalla granularità -t usata
+    per il calcolo di dettaglio.
+    """
+    for b in bucket_list:
+        tempo_inizio = b['tempo_cum_s'] - b['tempo_attivo_s']
+        dist_inizio = b['dist_cum_m'] - b['distanza_m']
+        b['time_bucket_idx'] = int(tempo_inizio // time_bucket_s) if time_bucket_s > 0 else 0
+        b['distance_bucket_idx'] = int(dist_inizio // distance_bucket_m) if distance_bucket_m > 0 else 0
+    return bucket_list
+
+
+def raggruppa_per_bucket_discreto(bucket_list, campo_idx, mode):
+    """
+    Raggruppa i bucket fini per l'etichetta discreta campo_idx
+    ('time_bucket_idx' o 'distance_bucket_idx') e per ciascun gruppo
+    calcola distanza/tempo totali e le velocità delle fonti attive in
+    mode come (somma delle distanze del gruppo) / (somma dei tempi del
+    gruppo) — stesso principio di aggrega_per_bucket_temporale, non una
+    media dei bucket fini già calcolati (vedi nota 2 nel README).
+    Ritorna la lista dei gruppi ordinata per indice crescente.
+    """
+    gruppi = {}
+    for b in bucket_list:
+        idx = b[campo_idx]
+        g = gruppi.setdefault(idx, {
+            'idx': idx, 'n_bucket': 0, 'distanza_m': 0.0, 'tempo_attivo_s': 0.0,
+            'distanza_haversine_tot': 0.0, 'tempo_hav': 0.0,
+            'distanza_ufficiale_tot': 0.0, 'tempo_uff': 0.0,
+            'speed_device_sum': 0.0, 'n_punti': 0,
+        })
+        g['n_bucket'] += 1
+        g['distanza_m'] += b['distanza_m']
+        g['tempo_attivo_s'] += b['tempo_attivo_s']
+        g['distanza_haversine_tot'] += b['distanza_haversine_tot']
+        g['tempo_hav'] += b['tempo_hav']
+        g['distanza_ufficiale_tot'] += b['distanza_ufficiale_tot']
+        g['tempo_uff'] += b['tempo_uff']
+        g['speed_device_sum'] += b['speed_device_media_ms'] * b['n_punti']
+        g['n_punti'] += b['n_punti']
+
+    risultati = []
+    for idx in sorted(gruppi):
+        g = gruppi[idx]
+        g['speed_device_media_ms'] = (g['speed_device_sum'] / g['n_punti']) if g['n_punti'] else 0.0
+        g['speed_haversine_ms'] = g['distanza_haversine_tot'] / g['tempo_hav'] if g['tempo_hav'] > 0 else 0.0
+        g['speed_ufficiale_ms'] = g['distanza_ufficiale_tot'] / g['tempo_uff'] if g['tempo_uff'] > 0 else 0.0
+        risultati.append(g)
+    return risultati
+
+
+def stampa_analisi_bucket_discreti(bucket_list, mode, time_bucket_min, distance_bucket_m):
+    """Stampa le tabelle di performance per bucket temporale e di distanza."""
+
+    def header_e_righe(gruppi, etichetta_fn):
+        if mode == 'a':
+            header = (
+                f"{'Bucket':<16} {'Dist. (m)':<11} {'Tempo (s)':<11} "
+                f"{'Speed dev. (km/h)':<19} {'Passo dev.':<13} "
+                f"{'Speed hav. (km/h)':<19} {'Passo hav.':<13} "
+                f"{'Speed uff. (km/h)':<19} {'Passo uff.':<13}"
+            )
+        else:
+            sigla = 'hav.' if mode == 'h' else 'uff.'
+            header = (
+                f"{'Bucket':<16} {'Dist. (m)':<11} {'Tempo (s)':<11} "
+                f"{'Speed ' + sigla + ' (km/h)':<19} {'Passo ' + sigla:<13}"
+            )
+        print(header)
+        for g in gruppi:
+            base = f"{etichetta_fn(g['idx']):<16} {g['distanza_m']:<11.1f} {g['tempo_attivo_s']:<11.0f} "
+            if mode == 'a':
+                pace_dev = ms_a_pace(g['speed_device_media_ms'])
+                pace_hav = ms_a_pace(g['speed_haversine_ms'])
+                pace_uff = ms_a_pace(g['speed_ufficiale_ms'])
+                print(
+                    base
+                    + f"{ms_a_kmh(g['speed_device_media_ms']):<19.2f} {formatta_pace(pace_dev):<13} "
+                    + f"{ms_a_kmh(g['speed_haversine_ms']):<19.2f} {formatta_pace(pace_hav):<13} "
+                    + f"{ms_a_kmh(g['speed_ufficiale_ms']):<19.2f} {formatta_pace(pace_uff):<13}"
+                )
+            else:
+                speed_ms = g['speed_haversine_ms'] if mode == 'h' else g['speed_ufficiale_ms']
+                print(base + f"{ms_a_kmh(speed_ms):<19.2f} {formatta_pace(ms_a_pace(speed_ms)):<13}")
+
+    print()
+    print(f"Performance per bucket temporale da {time_bucket_min:g} min "
+          f"(come sono andato dopo X minuti):")
+    gruppi_tempo = raggruppa_per_bucket_discreto(bucket_list, 'time_bucket_idx', mode)
+    header_e_righe(
+        gruppi_tempo,
+        lambda idx: f"{idx * time_bucket_min:g}-{(idx + 1) * time_bucket_min:g} min",
+    )
+
+    print()
+    print(f"Performance per bucket di distanza da {distance_bucket_m:g} m "
+          f"(come sono andato dopo D metri):")
+    gruppi_distanza = raggruppa_per_bucket_discreto(bucket_list, 'distance_bucket_idx', mode)
+    header_e_righe(
+        gruppi_distanza,
+        lambda idx: f"{idx * distance_bucket_m:g}-{(idx + 1) * distance_bucket_m:g} m",
+    )
 
 
 # ----------------------------------------------------------------------
@@ -536,9 +681,11 @@ def righe_export(bucket_list, mode, id_attivita):
       reale del bucket), dim_bucket_s (T), n_punti, dist_m, dist_cum_m,
       tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s (cumulati
       fino alla fine del bucket incluso: cumulato = cumulato della riga
-      precedente + valore della riga corrente), e per ogni
-      fonte della modalità speed_<fonte>_kmh e pace_<fonte>_s_km (secondi
-      per km).
+      precedente + valore della riga corrente), time_bucket_idx e
+      distance_bucket_idx (etichette intere e ordinabili del bucket "macro"
+      di tempo/distanza a cui appartiene la riga, vedi
+      etichetta_bucket_discreti), e per ogni fonte della modalità
+      speed_<fonte>_kmh e pace_<fonte>_min_km (minuti per km, decimali).
     """
     campi = {
         'dev': 'speed_device_media_ms',
@@ -549,9 +696,10 @@ def righe_export(bucket_list, mode, id_attivita):
 
     intestazione = ['id_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
                     'dim_bucket_s', 'n_punti', 'dist_m', 'dist_cum_m',
-                    'tempo_bucket_s', 'tempo_cum_s']
+                    'tempo_bucket_s', 'tempo_cum_s',
+                    'time_bucket_idx', 'distance_bucket_idx']
     for sg in sigle:
-        intestazione += [f'speed_{sg}_kmh', f'pace_{sg}_s_km']
+        intestazione += [f'speed_{sg}_kmh', f'pace_{sg}_min_km']
 
     righe = []
     for b in bucket_list:
@@ -563,10 +711,11 @@ def righe_export(bucket_list, mode, id_attivita):
             b['n_punti'], round(b['distanza_m'], 3),
             round(b['dist_cum_m'], 3), round(b['tempo_attivo_s'], 3),
             round(b['tempo_cum_s'], 3),
+            b['time_bucket_idx'], b['distance_bucket_idx'],
         ]
         for sg in sigle:
             v = b[campi[sg]]
-            riga += [round(ms_a_kmh(v), 3), round(1000 / v, 1) if v > 0 else None]
+            riga += [round(ms_a_kmh(v), 3), round(ms_a_pace(v), 3) if v > 0 else None]
         righe.append(riga)
     return intestazione, righe
 
@@ -629,6 +778,9 @@ def formatta_pace(min_per_km):
         return "N/D"
     minuti = int(min_per_km)
     secondi = int(round((min_per_km - minuti) * 60))
+    if secondi == 60:
+        minuti += 1
+        secondi = 0
     return f"{minuti}:{secondi:02d} min/km"
 
 
@@ -677,8 +829,29 @@ def main():
         default=None,
         help="ID attività da usare al posto di quello ricavato dal file .fit",
     )
+    parser.add_argument(
+        "--time-bucket",
+        dest="time_bucket_min",
+        type=float,
+        default=5.0,
+        help="Dimensione (minuti) dei bucket temporali discreti e ordinabili usati "
+             "per l'analisi 'come ho performato dopo X minuti' (default: 5)",
+    )
+    parser.add_argument(
+        "--distance-bucket",
+        dest="distance_bucket_m",
+        type=float,
+        default=500.0,
+        help="Dimensione (metri) dei bucket di distanza discreti e ordinabili usati "
+             "per l'analisi 'come ho performato dopo D metri' (default: 500)",
+    )
     args = parser.parse_args()
     mode = args.mode
+
+    if args.time_bucket_min <= 0:
+        parser.error("--time-bucket deve essere maggiore di 0")
+    if args.distance_bucket_m <= 0:
+        parser.error("--distance-bucket deve essere maggiore di 0")
 
     punti = leggi_record(args.percorso_fit)
     if not punti:
@@ -694,6 +867,9 @@ def main():
 
     punti = calcola_velocita(punti, mode)
     bucket_list = aggrega_per_bucket_temporale(punti, args.intervallo, mode)
+    bucket_list = etichetta_bucket_discreti(
+        bucket_list, args.time_bucket_min * 60, args.distance_bucket_m,
+    )
 
     if args.id_attivita:
         id_attivita, fonte_id = args.id_attivita, "argomento --id"
@@ -775,6 +951,8 @@ def main():
         else:
             speed_ms = b['speed_haversine_bucket_ms'] if mode == 'h' else b['speed_ufficiale_bucket_ms']
             print(base + f"{ms_a_kmh(speed_ms):<19.2f} {formatta_pace(ms_a_pace(speed_ms)):<13}")
+
+    stampa_analisi_bucket_discreti(bucket_list, mode, args.time_bucket_min, args.distance_bucket_m)
 
     if args.export:
         formato = "xlsx" if args.export == "excel" else args.export
