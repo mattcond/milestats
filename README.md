@@ -82,8 +82,8 @@ Esempio: `1790417339_20260926T092056_20260926T100852_20260928T062546.csv`.
 Colonne: `id_attivita`, `timestamp` (inizio bucket), `ts_punto`, `lat`, `lon`,
 `dim_bucket_s`, `n_punti`, `dist_m`, `dist_cum_m`, `tempo_bucket_s`,
 `tempo_cum_s`, poi per ogni
-fonte della modalità `speed_<fonte>_kmh` e `pace_<fonte>_s_km` (secondi per km,
-numerico: es. 9:05 min/km = 545,0). I valori sono numeri veri, non testo
+fonte della modalità `speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km,
+numerico decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri, non testo
 formattato.
 
 - `dim_bucket_s`: dimensione del bucket in secondi, cioè il valore di `-t`

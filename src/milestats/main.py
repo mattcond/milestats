@@ -537,8 +537,8 @@ def righe_export(bucket_list, mode, id_attivita):
       tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s (cumulati
       fino alla fine del bucket incluso: cumulato = cumulato della riga
       precedente + valore della riga corrente), e per ogni
-      fonte della modalità speed_<fonte>_kmh e pace_<fonte>_s_km (secondi
-      per km).
+      fonte della modalità speed_<fonte>_kmh e pace_<fonte>_min_km (minuti
+      per km, decimali).
     """
     campi = {
         'dev': 'speed_device_media_ms',
@@ -551,7 +551,7 @@ def righe_export(bucket_list, mode, id_attivita):
                     'dim_bucket_s', 'n_punti', 'dist_m', 'dist_cum_m',
                     'tempo_bucket_s', 'tempo_cum_s']
     for sg in sigle:
-        intestazione += [f'speed_{sg}_kmh', f'pace_{sg}_s_km']
+        intestazione += [f'speed_{sg}_kmh', f'pace_{sg}_min_km']
 
     righe = []
     for b in bucket_list:
@@ -566,7 +566,7 @@ def righe_export(bucket_list, mode, id_attivita):
         ]
         for sg in sigle:
             v = b[campi[sg]]
-            riga += [round(ms_a_kmh(v), 3), round(1000 / v, 1) if v > 0 else None]
+            riga += [round(ms_a_kmh(v), 3), round(ms_a_pace(v), 3) if v > 0 else None]
         righe.append(riga)
     return intestazione, righe
 
