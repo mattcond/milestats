@@ -16,7 +16,7 @@ def _bucket_list(punti_sintetici, mode='a'):
     punti = filtra_per_finestre(list(punti_sintetici), None)
     punti = calcola_velocita(punti, mode)
     bucket_list = aggrega_per_bucket_temporale(punti, 5, mode)
-    return etichetta_bucket_discreti(bucket_list, 300, 500)
+    return etichetta_bucket_discreti(bucket_list, 5, 500)
 
 
 def test_righe_export_intestazione_modalita_a(punti_sintetici):

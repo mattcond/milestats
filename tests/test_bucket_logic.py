@@ -9,11 +9,11 @@ from milestats.main import (
 )
 
 
-def _pipeline(punti_sintetici, t_secondi, mode='a', time_bucket_s=5, distance_bucket_m=10):
+def _pipeline(punti_sintetici, t_secondi, mode='a', time_bucket_min=5 / 60, distance_bucket_m=10):
     punti = filtra_per_finestre(list(punti_sintetici), None)
     punti = calcola_velocita(punti, mode)
     bucket_list = aggrega_per_bucket_temporale(punti, t_secondi, mode)
-    bucket_list = etichetta_bucket_discreti(bucket_list, time_bucket_s, distance_bucket_m)
+    bucket_list = etichetta_bucket_discreti(bucket_list, time_bucket_min, distance_bucket_m)
     return punti, bucket_list
 
 
@@ -50,19 +50,27 @@ def test_aggrega_bucket_velocita_da_distanza_su_tempo_non_media_istantanee(punti
         assert b['speed_ufficiale_bucket_ms'] == 3.0
 
 
-def test_etichetta_bucket_discreti_indici_crescenti(punti_sintetici):
-    # bucket fini da 1s: l'etichetta segue il tempo attivo cumulato PRIMA di
-    # ogni bucket fine, quindi il primo bucket della finestra 5-10s (idx 1)
-    # è quello che chiude a tempo_cum_s=6 (inizio a 5s), non quello a 5s
-    _, bucket_list = _pipeline(punti_sintetici, t_secondi=1, time_bucket_s=5, distance_bucket_m=1000)
-    indici = [b['time_bucket_idx'] for b in bucket_list]
-    assert indici == [0, 0, 0, 0, 0, 0, 1, 1, 1, 1]
+def test_etichetta_bucket_discreti_formato_e_cambio_al_momento_giusto(punti_sintetici):
+    # bucket fini da 1s, macro da 5s (5/60 min): l'etichetta segue il tempo
+    # attivo cumulato PRIMA di ogni bucket fine, quindi il cambio di
+    # finestra avviene al settimo bucket fine (indice 6), non al sesto
+    _, bucket_list = _pipeline(punti_sintetici, t_secondi=1, time_bucket_min=5 / 60, distance_bucket_m=1000)
+    etichette = [b['time_bucket_idx'] for b in bucket_list]
+
+    assert etichette[0].startswith("001_")
+    assert etichette[6].startswith("002_")
+    assert etichette[:6] == [etichette[0]] * 6
+    assert etichette[6:] == [etichette[6]] * 4
+    # zero padding a 3 cifre -> l'ordinamento testuale coincide con quello
+    # temporale
+    assert etichette[0] < etichette[6]
 
 
 def test_raggruppa_per_bucket_discreto_somma_correttamente(punti_sintetici):
-    _, bucket_list = _pipeline(punti_sintetici, t_secondi=1, time_bucket_s=5, distance_bucket_m=1000)
+    _, bucket_list = _pipeline(punti_sintetici, t_secondi=1, time_bucket_min=5 / 60, distance_bucket_m=1000)
     gruppi = raggruppa_per_bucket_discreto(bucket_list, 'time_bucket_idx', 'a')
-    assert [g['idx'] for g in gruppi] == [0, 1]
+    assert len(gruppi) == 2
+    assert gruppi[0]['idx'] < gruppi[1]['idx']
     # gruppo 0: 6 bucket fini, 5 dei quali con un delta di 3 m (il primissimo
     # punto dell'attività non ha un delta precedente)
     assert gruppi[0]['distanza_m'] == pytest.approx(15.0)
