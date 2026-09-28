@@ -161,7 +161,7 @@ con `-m a`, o con `--time-bucket`/`--distance-bucket` diversi):
 
 ```bash
 uv run milestats --merge-output
-uv run milestats --merge-output -e xlsx -o export
+uv run milestats --merge-output -e xlsx
 ```
 
 Legge tutti i file `.csv` e `.xlsx` presenti in `data/output/` (non
@@ -172,12 +172,13 @@ colonna assente in un dato file vale **vuoto/null** in tutte le sue righe.
 Un file che non si riesce a leggere (es. corrotto) viene segnalato su
 stderr e saltato, senza interrompere il merge degli altri.
 
-Il formato del file risultante segue `-e`/`--export` (`csv` se non
-specificato, indipendentemente dal formato dei singoli file letti, che può
-essere misto csv/xlsx) e va nella cartella indicata da `-o`/`--output-dir`
-(default: cartella corrente — non `data/output/`, per evitare che un merge
-venga incluso in un merge successivo). Nome file:
-`merge_<n>file_<timestamp UTC>.<csv|xlsx>`.
+Il file risultante viene scritto anch'esso in `data/output/` — stessa
+convenzione di `--process-all`, `-o`/`--output-dir` viene ignorato — con
+nome `merge_<n>file_<timestamp UTC>.<csv|xlsx>` (formato secondo
+`-e`/`--export`, `csv` se non specificato, indipendentemente dal formato
+dei singoli file letti, che può essere misto csv/xlsx). Un merge
+precedente presente nella cartella (`merge_*.csv`/`.xlsx`) non viene
+riletto come input di un merge successivo.
 
 `percorso_fit`, `--process-all` e `--id` non sono compatibili con
 `--merge-output`.
