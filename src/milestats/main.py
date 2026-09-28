@@ -102,18 +102,22 @@ sia per haversine sia per la distanza ufficiale.
 Bucket discreti per l'analisi "come ho performato dopo X minuti / D metri"
 ---------------------------------------------------------------------------
 Oltre al bucket fine di dettaglio (-t/--intervallo, in secondi), ogni riga
-riceve due etichette intere e ordinabili, indipendenti da -t:
+riceve due etichette testuali, discrete e ordinabili anche come testo
+(zero padding a 3 cifre), indipendenti da -t, nel formato
+NNN_inizio-fine unità:
   - time_bucket_idx: a quale finestra da --time-bucket minuti (default 5)
-    di tempo ATTIVO appartiene l'inizio della riga (0 = 0-5 min, 1 = 5-10
-    min, ...);
+    di tempo ATTIVO appartiene l'inizio della riga ('001_0-5 min',
+    '002_5-10 min', ...);
   - distance_bucket_idx: a quale finestra da --distance-bucket metri
-    (default 500) di distanza appartiene l'inizio della riga (0 = 0-500 m,
-    1 = 500-1000 m, ...).
-Sono incluse nell'export CSV/Excel per filtrare/raggruppare, e usate per
-stampare a schermo due tabelle di riepilogo (velocità/passo raggruppati per
-finestra, calcolati come distanza totale della finestra / tempo totale
-della finestra, non come media dei bucket fini) che rispondono direttamente
-a "come sono andato dopo X minuti" e "come sono andato dopo D metri".
+    (default 500) di distanza appartiene l'inizio della riga
+    ('001_0-500 m', '002_500-1000 m', ...).
+Sono etichette di riga, non un'aggregazione fatta dal tool: servono a poter
+raggruppare/pivotare il dettaglio a valle (Excel, pandas, ...) su queste
+colonne. In più, per comodità, vengono usate anche per stampare a schermo
+due tabelle di riepilogo (velocità/passo raggruppati per finestra,
+calcolati come distanza totale della finestra / tempo totale della
+finestra, non come media dei bucket fini) che rispondono direttamente a
+"come sono andato dopo X minuti" e "come sono andato dopo D metri".
 """
 
 import argparse
@@ -504,41 +508,62 @@ def aggrega_per_bucket_temporale(punti, t_secondi, mode='a'):
 # ----------------------------------------------------------------------
 # Etichette discrete e ordinabili: bucket "macro" di tempo/distanza
 # ----------------------------------------------------------------------
-def etichetta_bucket_discreti(bucket_list, time_bucket_s, distance_bucket_m):
+def formatta_etichetta_bucket(idx, dimensione, unita):
+    """
+    Etichetta leggibile e ordinabile (per testo, non solo per valore
+    numerico) di un bucket "macro": numero progressivo a partire da 1,
+    con zero padding a 3 cifre, seguito dall'intervallo che rappresenta.
+    Esempio: formatta_etichetta_bucket(0, 5, 'min') -> '001_0-5 min';
+    formatta_etichetta_bucket(1, 500, 'm') -> '002_500-1000 m'.
+    """
+    inizio = idx * dimensione
+    fine = (idx + 1) * dimensione
+    return f"{idx + 1:03d}_{inizio:g}-{fine:g} {unita}"
+
+
+def etichetta_bucket_discreti(bucket_list, time_bucket_min, distance_bucket_m):
     """
     Aggiunge a ogni bucket fine (quello da -t/--intervallo) due etichette
-    intere, discrete e ordinabili:
-      - time_bucket_idx: indice del bucket "macro" da time_bucket_s secondi
-        a cui appartiene l'INIZIO del bucket fine (tempo attivo cumulato
-        prima del bucket, diviso time_bucket_s, troncato);
-      - distance_bucket_idx: indice del bucket "macro" da distance_bucket_m
-        metri a cui appartiene l'INIZIO del bucket fine (distanza cumulata
-        prima del bucket, divisa per distance_bucket_m, troncata).
+    testuali, discrete e ordinabili anche come semplice testo (es. in un
+    foglio Excel), nel formato NNN_inizio-fine unità (vedi
+    formatta_etichetta_bucket):
+      - time_bucket_idx: bucket "macro" da time_bucket_min minuti a cui
+        appartiene l'INIZIO del bucket fine (tempo attivo cumulato prima
+        del bucket, diviso time_bucket_min minuti, troncato);
+      - distance_bucket_idx: bucket "macro" da distance_bucket_m metri a
+        cui appartiene l'INIZIO del bucket fine (distanza cumulata prima
+        del bucket, divisa per distance_bucket_m, troncata).
 
-    Esempio: con time_bucket_s = 300 (5 min) un bucket fine che inizia al
-    minuto 7 di tempo attivo ha time_bucket_idx = 1 (finestra 5-10 min).
-    Le etichette permettono di raggruppare i bucket fini (vedi
-    raggruppa_per_bucket_discreto) per rispondere a "come ho performato
-    dopo X minuti / D metri", indipendentemente dalla granularità -t usata
-    per il calcolo di dettaglio.
+    Esempio: con time_bucket_min = 5 un bucket fine che inizia al minuto 7
+    di tempo attivo ha time_bucket_idx = '002_5-10 min'. Le etichette
+    permettono di raggruppare i bucket fini (vedi
+    raggruppa_per_bucket_discreto, o un pivot esterno su queste colonne)
+    per rispondere a "come ho performato dopo X minuti / D metri",
+    indipendentemente dalla granularità -t usata per il calcolo di
+    dettaglio.
     """
+    time_bucket_s = time_bucket_min * 60
     for b in bucket_list:
         tempo_inizio = b['tempo_cum_s'] - b['tempo_attivo_s']
         dist_inizio = b['dist_cum_m'] - b['distanza_m']
-        b['time_bucket_idx'] = int(tempo_inizio // time_bucket_s) if time_bucket_s > 0 else 0
-        b['distance_bucket_idx'] = int(dist_inizio // distance_bucket_m) if distance_bucket_m > 0 else 0
+        idx_tempo = int(tempo_inizio // time_bucket_s) if time_bucket_s > 0 else 0
+        idx_distanza = int(dist_inizio // distance_bucket_m) if distance_bucket_m > 0 else 0
+        b['time_bucket_idx'] = formatta_etichetta_bucket(idx_tempo, time_bucket_min, 'min')
+        b['distance_bucket_idx'] = formatta_etichetta_bucket(idx_distanza, distance_bucket_m, 'm')
     return bucket_list
 
 
 def raggruppa_per_bucket_discreto(bucket_list, campo_idx, mode):
     """
     Raggruppa i bucket fini per l'etichetta discreta campo_idx
-    ('time_bucket_idx' o 'distance_bucket_idx') e per ciascun gruppo
-    calcola distanza/tempo totali e le velocità delle fonti attive in
-    mode come (somma delle distanze del gruppo) / (somma dei tempi del
-    gruppo) — stesso principio di aggrega_per_bucket_temporale, non una
-    media dei bucket fini già calcolati (vedi nota 2 nel README).
-    Ritorna la lista dei gruppi ordinata per indice crescente.
+    ('time_bucket_idx' o 'distance_bucket_idx', vedi
+    formatta_etichetta_bucket) e per ciascun gruppo calcola distanza/tempo
+    totali e le velocità delle fonti attive in mode come (somma delle
+    distanze del gruppo) / (somma dei tempi del gruppo) — stesso principio
+    di aggrega_per_bucket_temporale, non una media dei bucket fini già
+    calcolati (vedi nota 2 nel README). Ritorna la lista dei gruppi
+    ordinata per etichetta crescente (l'ordinamento testuale coincide con
+    quello numerico grazie allo zero padding a 3 cifre).
     """
     gruppi = {}
     for b in bucket_list:
@@ -570,12 +595,17 @@ def raggruppa_per_bucket_discreto(bucket_list, campo_idx, mode):
 
 
 def stampa_analisi_bucket_discreti(bucket_list, mode, time_bucket_min, distance_bucket_m):
-    """Stampa le tabelle di performance per bucket temporale e di distanza."""
+    """
+    Stampa le tabelle di performance per bucket temporale e di distanza.
+    L'etichetta di ogni riga è già quella prodotta da
+    formatta_etichetta_bucket (es. '003_10-15 min'), la stessa che compare
+    nell'export: qui non viene ricalcolata, solo mostrata.
+    """
 
-    def header_e_righe(gruppi, etichetta_fn):
+    def header_e_righe(gruppi):
         if mode == 'a':
             header = (
-                f"{'Bucket':<16} {'Dist. (m)':<11} {'Tempo (s)':<11} "
+                f"{'Bucket':<20} {'Dist. (m)':<11} {'Tempo (s)':<11} "
                 f"{'Speed dev. (km/h)':<19} {'Passo dev.':<13} "
                 f"{'Speed hav. (km/h)':<19} {'Passo hav.':<13} "
                 f"{'Speed uff. (km/h)':<19} {'Passo uff.':<13}"
@@ -583,12 +613,12 @@ def stampa_analisi_bucket_discreti(bucket_list, mode, time_bucket_min, distance_
         else:
             sigla = 'hav.' if mode == 'h' else 'uff.'
             header = (
-                f"{'Bucket':<16} {'Dist. (m)':<11} {'Tempo (s)':<11} "
+                f"{'Bucket':<20} {'Dist. (m)':<11} {'Tempo (s)':<11} "
                 f"{'Speed ' + sigla + ' (km/h)':<19} {'Passo ' + sigla:<13}"
             )
         print(header)
         for g in gruppi:
-            base = f"{etichetta_fn(g['idx']):<16} {g['distanza_m']:<11.1f} {g['tempo_attivo_s']:<11.0f} "
+            base = f"{g['idx']:<20} {g['distanza_m']:<11.1f} {g['tempo_attivo_s']:<11.0f} "
             if mode == 'a':
                 pace_dev = ms_a_pace(g['speed_device_media_ms'])
                 pace_hav = ms_a_pace(g['speed_haversine_ms'])
@@ -606,20 +636,12 @@ def stampa_analisi_bucket_discreti(bucket_list, mode, time_bucket_min, distance_
     print()
     print(f"Performance per bucket temporale da {time_bucket_min:g} min "
           f"(come sono andato dopo X minuti):")
-    gruppi_tempo = raggruppa_per_bucket_discreto(bucket_list, 'time_bucket_idx', mode)
-    header_e_righe(
-        gruppi_tempo,
-        lambda idx: f"{idx * time_bucket_min:g}-{(idx + 1) * time_bucket_min:g} min",
-    )
+    header_e_righe(raggruppa_per_bucket_discreto(bucket_list, 'time_bucket_idx', mode))
 
     print()
     print(f"Performance per bucket di distanza da {distance_bucket_m:g} m "
           f"(come sono andato dopo D metri):")
-    gruppi_distanza = raggruppa_per_bucket_discreto(bucket_list, 'distance_bucket_idx', mode)
-    header_e_righe(
-        gruppi_distanza,
-        lambda idx: f"{idx * distance_bucket_m:g}-{(idx + 1) * distance_bucket_m:g} m",
-    )
+    header_e_righe(raggruppa_per_bucket_discreto(bucket_list, 'distance_bucket_idx', mode))
 
 
 # ----------------------------------------------------------------------
@@ -676,17 +698,21 @@ def nome_file_export(id_attivita, ts_start, ts_end, ts_now):
 
 def righe_export(bucket_list, mode, id_attivita):
     """
-    Costruisce (intestazione, righe) per l'export, con valori NUMERICI
-    (non stringhe formattate) così si aprono correttamente in Excel:
+    Costruisce (intestazione, righe) per l'export. I valori sono NUMERICI
+    (non stringhe formattate) così si aprono correttamente in Excel, tranne
+    time_bucket_idx e distance_bucket_idx che sono testo per costruzione
+    (vedi formatta_etichetta_bucket), pensati per un pivot/raggruppamento
+    a valle, non per un calcolo numerico:
       id_attivita, timestamp (inizio bucket), ts_punto/lat/lon (primo punto
       reale del bucket), dim_bucket_s (T), n_punti, dist_m, dist_cum_m,
       tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s (cumulati
       fino alla fine del bucket incluso: cumulato = cumulato della riga
       precedente + valore della riga corrente), time_bucket_idx e
-      distance_bucket_idx (etichette intere e ordinabili del bucket "macro"
-      di tempo/distanza a cui appartiene la riga, vedi
-      etichetta_bucket_discreti), e per ogni fonte della modalità
-      speed_<fonte>_kmh e pace_<fonte>_min_km (minuti per km, decimali).
+      distance_bucket_idx (etichetta testuale, ordinabile, del bucket
+      "macro" di tempo/distanza a cui appartiene la riga, es.
+      '003_10-15 min'; vedi etichetta_bucket_discreti), e per ogni fonte
+      della modalità speed_<fonte>_kmh e pace_<fonte>_min_km (minuti per
+      km, decimali).
     """
     campi = {
         'dev': 'speed_device_media_ms',
@@ -814,7 +840,7 @@ def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
     punti = calcola_velocita(punti, mode)
     bucket_list = aggrega_per_bucket_temporale(punti, intervallo, mode)
     bucket_list = etichetta_bucket_discreti(
-        bucket_list, time_bucket_min * 60, distance_bucket_m,
+        bucket_list, time_bucket_min, distance_bucket_m,
     )
 
     if id_attivita_arg:
