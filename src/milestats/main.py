@@ -884,16 +884,24 @@ def unisci_righe_export(file_export):
     return intestazione_unione, righe_unione
 
 
-def unisci_output(formato, output_dir):
+def unisci_output(formato):
     """
     Legge tutti i file .csv/.xlsx già presenti in data/output/ (prodotti da
     run precedenti di milestats, anche con modalità o colonne diverse tra
     loro) e li accoda in un unico file, con l'unione delle intestazioni
-    (vedi unisci_righe_export). Un file che non si riesce a leggere viene
-    segnalato su stderr e saltato, senza interrompere gli altri.
+    (vedi unisci_righe_export). Il file risultante viene scritto nella
+    stessa cartella data/output/ (stessa convenzione di --process-all, che
+    ignora -o/--output-dir e scrive sempre lì), escludendo dalla lettura
+    eventuali file merge_*.csv/.xlsx di un merge precedente, così un nuovo
+    merge non include anche il risultato di quello prima. Un file che non
+    si riesce a leggere viene segnalato su stderr e saltato, senza
+    interrompere gli altri.
     """
     cartella_output = Path("data") / "output"
-    file_totali = sorted(cartella_output.glob("*.csv")) + sorted(cartella_output.glob("*.xlsx"))
+    file_totali = sorted(
+        p for p in list(cartella_output.glob("*.csv")) + list(cartella_output.glob("*.xlsx"))
+        if not p.name.startswith("merge_")
+    )
     if not file_totali:
         print(f"Nessun file .csv/.xlsx trovato in {cartella_output}/.", file=sys.stderr)
         return
@@ -915,7 +923,7 @@ def unisci_output(formato, output_dir):
 
     formato = normalizza_formato_export(formato) or "csv"
     nome = f"merge_{len(file_letti)}file_{datetime.now(timezone.utc).strftime(FORMATO_TS_FILE)}"
-    percorso = esporta(intestazione, righe, formato, output_dir, nome)
+    percorso = esporta(intestazione, righe, formato, cartella_output, nome)
     print(f"Uniti {len(file_letti)} file ({len(righe)} righe, {len(intestazione)} colonne) in: {percorso}")
 
 
@@ -1200,9 +1208,10 @@ def main():
         action="store_true",
         help="Legge tutti i file .csv/.xlsx già presenti in data/output/ (anche con "
              "colonne diverse tra loro, es. da run con -m differenti) e li accoda in "
-             "un unico file: una colonna assente in un file vale vuoto/null nelle sue "
-             "righe. Il formato del file risultante segue --export (csv se non "
-             "specificato) e va in --output-dir. In questa modalità percorso_fit, "
+             "un unico file, scritto anch'esso in data/output/ (--output-dir viene "
+             "ignorato, come per --process-all): una colonna assente in un file vale "
+             "vuoto/null nelle sue righe. Il formato del file risultante segue "
+             "--export (csv se non specificato). In questa modalità percorso_fit, "
              "--process-all e --id non vanno indicati",
     )
     args = parser.parse_args()
@@ -1221,7 +1230,7 @@ def main():
         parser.error("specificare un percorso_fit, --process-all oppure --merge-output")
 
     if args.merge_output:
-        unisci_output(args.export, args.output_dir)
+        unisci_output(args.export)
         return
 
     if args.process_all:

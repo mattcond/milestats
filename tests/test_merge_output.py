@@ -83,10 +83,12 @@ def test_unisci_output_csv(tmp_path, monkeypatch, capsys):
     _scrivi_xlsx(cartella_output / "att2.xlsx", ['id_attivita', 'speed_hav_kmh'], [['att2', 7.1]])
 
     monkeypatch.chdir(tmp_path)
-    unisci_output('csv', str(tmp_path))
+    unisci_output('csv')
     out = capsys.readouterr().out
 
-    file_merge = list(tmp_path.glob('merge_*.csv'))
+    # il merge va scritto in data/output/, la stessa cartella letta come
+    # input (come --process-all, che ignora -o/--output-dir)
+    file_merge = list(cartella_output.glob('merge_*.csv'))
     assert len(file_merge) == 1
     assert "Uniti 2 file" in out
 
@@ -100,9 +102,9 @@ def test_unisci_output_csv(tmp_path, monkeypatch, capsys):
 def test_unisci_output_nessun_file_non_crasha(tmp_path, monkeypatch, capsys):
     (tmp_path / "data" / "output").mkdir(parents=True)
     monkeypatch.chdir(tmp_path)
-    unisci_output('csv', str(tmp_path))
+    unisci_output('csv')
     err = capsys.readouterr().err
-    assert list(tmp_path.glob('merge_*.csv')) == []
+    assert list(tmp_path.glob('data/output/merge_*.csv')) == []
     assert "Nessun file" in err
 
 
@@ -113,11 +115,25 @@ def test_unisci_output_file_non_valido_viene_saltato(tmp_path, monkeypatch, caps
     (cartella_output / "rotto.csv").write_text("")
 
     monkeypatch.chdir(tmp_path)
-    unisci_output('csv', str(tmp_path))
+    unisci_output('csv')
     captured = capsys.readouterr()
 
     assert "rotto.csv" in captured.err
     assert "Uniti 1 file" in captured.out
+
+
+def test_unisci_output_esclude_un_merge_precedente_dall_input(tmp_path, monkeypatch, capsys):
+    cartella_output = tmp_path / "data" / "output"
+    cartella_output.mkdir(parents=True)
+    _scrivi_csv(cartella_output / "att1.csv", ['id_attivita'], [['att1']])
+
+    monkeypatch.chdir(tmp_path)
+    unisci_output('csv')  # primo merge: 1 file -> merge_1file_....csv
+    capsys.readouterr()
+    unisci_output('csv')  # secondo merge: deve ignorare il merge precedente
+    out = capsys.readouterr().out
+
+    assert "Uniti 1 file" in out  # non 2: il merge_1file_... non viene riletto
 
 
 def test_cli_merge_output_end_to_end_xlsx(tmp_path, monkeypatch, capsys):
@@ -130,7 +146,7 @@ def test_cli_merge_output_end_to_end_xlsx(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr('sys.argv', ['milestats', '--merge-output', '-e', 'xlsx'])
     main()
 
-    file_merge = list(tmp_path.glob('merge_*.xlsx'))
+    file_merge = list(cartella_output.glob('merge_*.xlsx'))
     assert len(file_merge) == 1
     ws = load_workbook(file_merge[0]).active
     assert [c.value for c in ws[1]] == ['id_attivita', 'speed_uff_kmh', 'speed_hav_kmh']
