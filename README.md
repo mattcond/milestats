@@ -260,7 +260,8 @@ posizione.
 uv sync
 ```
 
-Questo crea il virtualenv e installa `fitparse` (lettura .fit) e `openpyxl` (export Excel).
+Questo crea il virtualenv e installa `fitparse` (lettura .fit), `openpyxl`
+(export Excel) e `pytest` (dipendenza di sviluppo, per i test).
 
 ## Uso
 
@@ -286,3 +287,17 @@ uv run milestats /percorso/al/tuo/file.fit -t 15
 Riepilogo generale (distanza totale ufficiale, tempo totale, velocità e
 passo medi complessivi), seguito da una tabella con una riga per bucket e
 le tre coppie speed/passo descritte sopra.
+
+## Test
+
+```bash
+uv run pytest
+```
+
+Suite snella (~30 test, ~10 secondi): funzioni pure (haversine, conversioni
+di velocità/passo, naming dell'export) con dati sintetici che non richiedono
+di leggere un file `.fit`; aggregazione per bucket ed etichette
+tempo/distanza sulla stessa base sintetica; export CSV/Excel; alcuni test di
+integrazione sul file di esempio con bucket grandi (`-t 600`) per restare
+veloci pur passando dalla pipeline completa, incluso `--process-all`. Gira
+automaticamente su push/PR (`.github/workflows/tests.yml`).
