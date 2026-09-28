@@ -7,6 +7,7 @@ from milestats.main import (
     calcola_velocita,
     esporta,
     etichetta_bucket_discreti,
+    etichetta_categoria_passo,
     filtra_per_finestre,
     righe_export,
 )
@@ -16,7 +17,8 @@ def _bucket_list(punti_sintetici, mode='a'):
     punti = filtra_per_finestre(list(punti_sintetici), None)
     punti = calcola_velocita(punti, mode)
     bucket_list = aggrega_per_bucket_temporale(punti, 5, mode)
-    return etichetta_bucket_discreti(bucket_list, 5, 500)
+    bucket_list = etichetta_bucket_discreti(bucket_list, 5, 500)
+    return etichetta_categoria_passo(bucket_list, mode)
 
 
 def test_righe_export_intestazione_modalita_a(punti_sintetici):
@@ -25,6 +27,7 @@ def test_righe_export_intestazione_modalita_a(punti_sintetici):
     assert intestazione[:2] == ['id_attivita', 'timestamp']
     assert 'time_bucket_idx' in intestazione
     assert 'distance_bucket_idx' in intestazione
+    assert 'pace_categoria' in intestazione
     for sigla in ('dev', 'hav', 'uff'):
         assert f'speed_{sigla}_kmh' in intestazione
         assert f'pace_{sigla}_min_km' in intestazione
