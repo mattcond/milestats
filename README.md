@@ -44,6 +44,40 @@ uv run milestats data/Corsa_dell_ora_di_pranzo.fit -m h
 uv run milestats data/Corsa_dell_ora_di_pranzo.fit -m a -t 30
 ```
 
+## Bucket discreti per tempo e distanza (`--time-bucket`, `--distance-bucket`)
+
+Oltre al bucket fine di dettaglio (`-t`/`--intervallo`, in secondi), ogni
+riga della tabella riceve due etichette intere e ordinabili, indipendenti
+da `-t`:
+
+- `time_bucket_idx`: a quale finestra da `--time-bucket` minuti (default
+  **5**) di tempo attivo appartiene l'inizio della riga (`0` = 0-5 min,
+  `1` = 5-10 min, ...);
+- `distance_bucket_idx`: a quale finestra da `--distance-bucket` metri
+  (default **500**) di distanza appartiene l'inizio della riga (`0` =
+  0-500 m, `1` = 500-1000 m, ...).
+
+Le etichette sono incluse nell'export CSV/Excel (colonne `time_bucket_idx`
+e `distance_bucket_idx`) per poter filtrare/raggruppare i dati, e vengono
+usate per stampare a schermo due tabelle di riepilogo — una per finestra
+temporale, una per finestra di distanza — con velocità e passo calcolati
+come distanza totale della finestra / tempo totale della finestra (non
+media dei bucket fini, stesso principio spiegato nella Nota 2 più sotto).
+Rispondono direttamente a "come sono andato dopo X minuti" e "come sono
+andato dopo D metri":
+
+```bash
+uv run milestats data/Corsa_dell_ora_di_pranzo.fit -m a --time-bucket 10 --distance-bucket 1000
+```
+
+```
+Performance per bucket temporale da 10 min (come sono andato dopo X minuti):
+Bucket           Dist. (m)   Tempo (s)   Speed dev. (km/h)   Passo dev.    Speed hav. (km/h)   Passo hav.    Speed uff. (km/h)   Passo uff.
+0-10 min         1103.6      629         5.40                11:07 min/km  6.47                9:16 min/km   6.32                9:30 min/km
+10-20 min        1113.8      600         5.90                10:10 min/km  6.71                8:56 min/km   6.68                8:59 min/km
+...
+```
+
 ## Punto del bucket, ID attività ed export
 
 **Punto del bucket.** Ogni riga riporta `lat`/`lon` del **primo punto reale**
@@ -81,7 +115,8 @@ Esempio: `1790417339_20260926T092056_20260926T100852_20260928T062546.csv`.
 
 Colonne: `id_attivita`, `timestamp` (inizio bucket), `ts_punto`, `lat`, `lon`,
 `dim_bucket_s`, `n_punti`, `dist_m`, `dist_cum_m`, `tempo_bucket_s`,
-`tempo_cum_s`, poi per ogni
+`tempo_cum_s`, `time_bucket_idx`, `distance_bucket_idx` (vedi sezione
+dedicata sopra), poi per ogni
 fonte della modalità `speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km,
 numerico decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri, non testo
 formattato.
