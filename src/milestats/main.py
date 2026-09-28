@@ -36,6 +36,11 @@ e i valori cumulati fino alla fine del bucket incluso: distanza (dist_cum_m)
 e tempo attivo (tempo_cum_s, senza pause). Cumulato = cumulato della riga
 precedente + valore della riga corrente.
 
+--process-all elabora tutti i .fit di data/ ed esporta ognuno in
+data/output/; --merge-output accoda poi tutti quegli export in un unico
+file, unendo le intestazioni (colonna assente in un file = vuoto/null in
+quel file, vedi unisci_output).
+
 Eventi timer e pause
 --------------------
 Il file contiene messaggi `event` con event == 'timer' e event_type
@@ -788,6 +793,132 @@ def esporta(intestazione, righe, formato, cartella, nome_base):
     return percorso
 
 
+def normalizza_formato_export(formato):
+    """'excel' diventa 'xlsx'; tutto il resto (incluso None) passa invariato."""
+    return "xlsx" if formato == "excel" else formato
+
+
+# ----------------------------------------------------------------------
+# --merge-output: legge tutti gli export già prodotti in data/output/ e li
+# accoda in un unico file, unendo le intestazioni
+# ----------------------------------------------------------------------
+def _deserializza_valore_csv(valore):
+    """
+    Un file CSV scrive tutto come testo: per rimettere in forma numerica le
+    colonne che lo erano nell'export originale (necessario per un merge
+    verso xlsx utile, con colonne ordinabili/sommabili) si tenta, in
+    ordine, intero, decimale, timestamp nel formato usato da
+    esporta()/righe_export; se nessuno funziona il valore resta testo
+    (es. le colonne time_bucket_idx/distance_bucket_idx, testuali per
+    costruzione). Una cella vuota torna None, come nell'export originale.
+    """
+    if valore == '':
+        return None
+    try:
+        return int(valore)
+    except ValueError:
+        pass
+    try:
+        return float(valore)
+    except ValueError:
+        pass
+    try:
+        return datetime.strptime(valore, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        pass
+    return valore
+
+
+def leggi_righe_export(percorso):
+    """
+    Legge un file di export (csv o xlsx, riconosciuto dall'estensione) già
+    prodotto da esporta(), e ritorna (intestazione, righe). Per i csv i
+    valori vengono deserializzati con _deserializza_valore_csv; per gli
+    xlsx i tipi nativi delle celle (int/float/datetime/str) sono già
+    corretti e vengono usati così come sono.
+    """
+    if percorso.suffix.lower() == '.csv':
+        with open(percorso, newline='', encoding='utf-8') as fh:
+            reader = csv.reader(fh)
+            try:
+                intestazione = next(reader)
+            except StopIteration:
+                raise ValueError("file csv vuoto, nessuna intestazione") from None
+            righe = [[_deserializza_valore_csv(v) for v in riga] for riga in reader]
+        return intestazione, righe
+
+    from openpyxl import load_workbook
+
+    wb = load_workbook(percorso, read_only=True, data_only=True)
+    righe_iter = wb.active.iter_rows(values_only=True)
+    intestazione = list(next(righe_iter))
+    righe = [list(riga) for riga in righe_iter]
+    return intestazione, righe
+
+
+def unisci_righe_export(file_export):
+    """
+    Accoda le righe di più export (ciascuno una coppia (intestazione,
+    righe), come ritornato da leggi_righe_export), unendo le intestazioni:
+    l'intestazione risultante è l'unione delle colonne di tutti i file,
+    nell'ordine in cui compaiono per la prima volta. Una colonna assente in
+    un dato file vale None in tutte le righe di quel file, indipendentemente
+    da come si chiamano o quante sono le sue colonne originali.
+    """
+    intestazione_unione = []
+    viste = set()
+    for intestazione, _ in file_export:
+        for nome in intestazione:
+            if nome not in viste:
+                viste.add(nome)
+                intestazione_unione.append(nome)
+
+    righe_unione = []
+    for intestazione, righe in file_export:
+        indice = {nome: i for i, nome in enumerate(intestazione)}
+        for riga in righe:
+            righe_unione.append([
+                riga[indice[nome]] if nome in indice else None
+                for nome in intestazione_unione
+            ])
+    return intestazione_unione, righe_unione
+
+
+def unisci_output(formato, output_dir):
+    """
+    Legge tutti i file .csv/.xlsx già presenti in data/output/ (prodotti da
+    run precedenti di milestats, anche con modalità o colonne diverse tra
+    loro) e li accoda in un unico file, con l'unione delle intestazioni
+    (vedi unisci_righe_export). Un file che non si riesce a leggere viene
+    segnalato su stderr e saltato, senza interrompere gli altri.
+    """
+    cartella_output = Path("data") / "output"
+    file_totali = sorted(cartella_output.glob("*.csv")) + sorted(cartella_output.glob("*.xlsx"))
+    if not file_totali:
+        print(f"Nessun file .csv/.xlsx trovato in {cartella_output}/.", file=sys.stderr)
+        return
+
+    file_export = []
+    file_letti = []
+    for percorso in file_totali:
+        try:
+            file_export.append(leggi_righe_export(percorso))
+            file_letti.append(percorso)
+        except Exception as e:
+            print(f"Errore leggendo {percorso}: {e}. File saltato.", file=sys.stderr)
+
+    if not file_export:
+        print("Nessun file leggibile trovato, nessun merge prodotto.", file=sys.stderr)
+        return
+
+    intestazione, righe = unisci_righe_export(file_export)
+
+    formato = normalizza_formato_export(formato) or "csv"
+    nome = f"merge_{len(file_letti)}file_{datetime.now(timezone.utc).strftime(FORMATO_TS_FILE)}"
+    percorso = esporta(intestazione, righe, formato, output_dir, nome)
+    print(f"Uniti {len(file_letti)} file ({len(righe)} righe, {len(intestazione)} colonne) in: {percorso}")
+
+
 # ----------------------------------------------------------------------
 # Conversioni di unità
 # ----------------------------------------------------------------------
@@ -929,7 +1060,7 @@ def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
     if export_formato is None:
         return None
 
-    formato = "xlsx" if export_formato == "excel" else export_formato
+    formato = normalizza_formato_export(export_formato)
     nome = nome_file_export(
         id_attivita,
         punti[0]['timestamp'],       # primo record dell'attività
@@ -965,7 +1096,7 @@ def elabora_tutti(mode, intervallo, time_bucket_min, distance_bucket_m, export_f
         print(f"Nessun file .fit trovato in {cartella_data}/.", file=sys.stderr)
         return
 
-    formato = "xlsx" if export_formato == "excel" else (export_formato or "csv")
+    formato = normalizza_formato_export(export_formato) or "csv"
     n_ok, n_errori = 0, 0
 
     for percorso in file_fit:
@@ -1064,6 +1195,16 @@ def main():
              "questa modalità percorso_fit e --id non vanno indicati; se --export non "
              "è specificato l'export usa csv",
     )
+    parser.add_argument(
+        "--merge-output",
+        action="store_true",
+        help="Legge tutti i file .csv/.xlsx già presenti in data/output/ (anche con "
+             "colonne diverse tra loro, es. da run con -m differenti) e li accoda in "
+             "un unico file: una colonna assente in un file vale vuoto/null nelle sue "
+             "righe. Il formato del file risultante segue --export (csv se non "
+             "specificato) e va in --output-dir. In questa modalità percorso_fit, "
+             "--process-all e --id non vanno indicati",
+    )
     args = parser.parse_args()
     mode = args.mode
 
@@ -1071,12 +1212,17 @@ def main():
         parser.error("--time-bucket deve essere maggiore di 0")
     if args.distance_bucket_m <= 0:
         parser.error("--distance-bucket deve essere maggiore di 0")
-    if args.process_all and args.percorso_fit:
-        parser.error("--process-all non accetta un percorso_fit esplicito")
-    if args.process_all and args.id_attivita:
-        parser.error("--id non è compatibile con --process-all")
-    if not args.process_all and not args.percorso_fit:
-        parser.error("specificare un percorso_fit oppure --process-all")
+    modalita_esclusive = [args.process_all, args.merge_output, bool(args.percorso_fit)]
+    if sum(modalita_esclusive) > 1:
+        parser.error("percorso_fit, --process-all e --merge-output sono mutuamente esclusivi")
+    if args.id_attivita and (args.process_all or args.merge_output):
+        parser.error("--id non è compatibile con --process-all o --merge-output")
+    if not any(modalita_esclusive):
+        parser.error("specificare un percorso_fit, --process-all oppure --merge-output")
+
+    if args.merge_output:
+        unisci_output(args.export, args.output_dir)
+        return
 
     if args.process_all:
         elabora_tutti(mode, args.intervallo, args.time_bucket_min, args.distance_bucket_m, args.export)

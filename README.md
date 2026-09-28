@@ -152,6 +152,36 @@ viene stampato un riepilogo con il numero di file elaborati e con errori.
 attività viene sempre ricavato dal file, per evitare collisioni di nome tra
 più file esportati).
 
+## Unire tutti gli export in un unico file (`--merge-output`)
+
+Per accodare in un unico file tutti gli export già prodotti in
+`data/output/` (da run precedenti di `milestats`, incluso `--process-all`),
+anche se non hanno tutti le stesse colonne (es. alcuni con `-m s`, altri
+con `-m a`, o con `--time-bucket`/`--distance-bucket` diversi):
+
+```bash
+uv run milestats --merge-output
+uv run milestats --merge-output -e xlsx -o export
+```
+
+Legge tutti i file `.csv` e `.xlsx` presenti in `data/output/` (non
+ricorsivo) e ne accoda le righe in un unico file, con **l'unione delle
+intestazioni**: la colonna risultante include tutte le colonne viste in
+almeno un file, nell'ordine in cui compaiono per la prima volta; una
+colonna assente in un dato file vale **vuoto/null** in tutte le sue righe.
+Un file che non si riesce a leggere (es. corrotto) viene segnalato su
+stderr e saltato, senza interrompere il merge degli altri.
+
+Il formato del file risultante segue `-e`/`--export` (`csv` se non
+specificato, indipendentemente dal formato dei singoli file letti, che può
+essere misto csv/xlsx) e va nella cartella indicata da `-o`/`--output-dir`
+(default: cartella corrente — non `data/output/`, per evitare che un merge
+venga incluso in un merge successivo). Nome file:
+`merge_<n>file_<timestamp UTC>.<csv|xlsx>`.
+
+`percorso_fit`, `--process-all` e `--id` non sono compatibili con
+`--merge-output`.
+
 - `dim_bucket_s`: dimensione del bucket in secondi, cioè il valore di `-t`
   (il numero di punti campionati è in `n_punti`).
 - `dist_cum_m`: distanza cumulata dall'inizio **fino alla fine del bucket
