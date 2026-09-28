@@ -89,19 +89,26 @@ ufficiale in `s`/`a`, haversine in `h`), dalla più lenta alla più veloce:
 
 | Indice | Fascia | Etichetta |
 |---|---|---|
-| 0 | 7:00–7:29 min/km | `000_7:00-7:29` |
-| 1 | 6:30–6:59 min/km | `001_6:30-6:59` |
-| 2 | 6:00–6:29 min/km | `002_6:00-6:29` |
-| 3 | 5:30–5:59 min/km | `003_5:30-5:59` |
-| 4 | 5:00–5:29 min/km | `004_5:00-5:29` |
-| 5 | 4:30–4:59 min/km | `005_4:30-4:59` |
-| 6 | più veloce di 4:30 min/km | `006_<4:30` |
+| 0 | 10:00 min/km o più lento | `000_>=10:00` |
+| 1 | 9:30–9:59 min/km | `001_9:30-9:59` |
+| 2 | 9:00–9:29 min/km | `002_9:00-9:29` |
+| 3 | 8:30–8:59 min/km | `003_8:30-8:59` |
+| 4 | 8:00–8:29 min/km | `004_8:00-8:29` |
+| 5 | 7:30–7:59 min/km | `005_7:30-7:59` |
+| 6 | 7:00–7:29 min/km | `006_7:00-7:29` |
+| 7 | 6:30–6:59 min/km | `007_6:30-6:59` |
+| 8 | 6:00–6:29 min/km | `008_6:00-6:29` |
+| 9 | 5:30–5:59 min/km | `009_5:30-5:59` |
+| 10 | 5:00–5:29 min/km | `010_5:00-5:29` |
+| 11 | 4:30–4:59 min/km | `011_4:30-4:59` |
+| 12 | più veloce di 4:30 min/km | `012_<4:30` |
 
-Un passo più lento di 7:30 min/km (fuori da tutte le fasce sopra) vale
-`999_>=7:30`; un passo non definito (velocità nulla, es. un bucket fermo)
-vale `N/D`. Come `time_bucket_idx`/`distance_bucket_idx`, è pensata per
-raggruppare/pivotare il dettaglio a valle, non per un'aggregazione fatta
-dal tool.
+Le fasce da 30 secondi coprono l'intero intervallo da 10:00 a 4:30 min/km
+senza buchi; le due fasce estreme (indice 0 e 12) sono aperte, quindi ogni
+passo positivo ricade sempre in una di esse. Un passo non definito
+(velocità nulla, es. un bucket fermo) vale `N/D`. Come
+`time_bucket_idx`/`distance_bucket_idx`, è pensata per raggruppare/pivotare
+il dettaglio a valle, non per un'aggregazione fatta dal tool.
 
 ## Punto del bucket, ID attività ed export
 

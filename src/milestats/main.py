@@ -559,10 +559,18 @@ def etichetta_bucket_discreti(bucket_list, time_bucket_min, distance_bucket_m):
 
 
 # Fasce fisse di passo (min/km) da 30 secondi, dalla più lenta (indice 0)
-# alla più veloce (indice 6): (soglia_minima, soglia_massima_esclusa,
-# etichetta). Le fasce sono contigue, quindi ogni passo in [0, 7:30) min/km
-# ricade in esattamente una di esse.
+# alla più veloce (ultimo indice): (soglia_minima, soglia_massima_esclusa,
+# etichetta). Coprono [0, +inf) senza buchi: le due fasce estreme sono
+# aperte (>=10:00 la più lenta, <4:30 la più veloce), quindi ogni passo
+# positivo ricade in esattamente una di esse, senza bisogno di un
+# indice "fuori scala" inventato.
 CATEGORIE_PASSO = [
+    (10.0, float('inf'), ">=10:00"),
+    (9.5, 10.0, "9:30-9:59"),
+    (9.0, 9.5, "9:00-9:29"),
+    (8.5, 9.0, "8:30-8:59"),
+    (8.0, 8.5, "8:00-8:29"),
+    (7.5, 8.0, "7:30-7:59"),
     (7.0, 7.5, "7:00-7:29"),
     (6.5, 7.0, "6:30-6:59"),
     (6.0, 6.5, "6:00-6:29"),
@@ -578,19 +586,17 @@ def categoria_passo(pace_min_km):
     Etichetta della fascia fissa di passo a cui appartiene pace_min_km
     (minuti/km, come ritornato da ms_a_pace), nello stesso formato
     NNN_etichetta usato per gli altri bucket discreti (ordinabile anche
-    come testo): '000_7:00-7:29' (la più lenta delle fasce definite) fino a
-    '006_<4:30' (la più veloce). A differenza di time_bucket_idx e
-    distance_bucket_idx, qui i confini sono fissi (non parametrizzabili da
-    CLI). Un passo più lento di 7:30 min/km (fuori da tutte le fasce
-    definite) vale '999_>=7:30'; un passo non definito (velocità nulla, es.
-    un bucket fermo) vale 'N/D'.
+    come testo): da '000_>=10:00' (la più lenta) a '012_<4:30' (la più
+    veloce). A differenza di time_bucket_idx e distance_bucket_idx, qui i
+    confini sono fissi (non parametrizzabili da CLI). Un passo non
+    definito (velocità nulla, es. un bucket fermo) vale 'N/D'.
     """
     if pace_min_km is None:
         return "N/D"
     for idx, (minimo, massimo, etichetta) in enumerate(CATEGORIE_PASSO):
         if minimo <= pace_min_km < massimo:
             return f"{idx:03d}_{etichetta}"
-    return "999_>=7:30"
+    return "N/D"  # non dovrebbe mai capitare: le fasce coprono [0, +inf)
 
 
 def etichetta_categoria_passo(bucket_list, mode):
@@ -765,7 +771,7 @@ def righe_export(bucket_list, mode, id_attivita):
       distance_bucket_idx (etichetta testuale, ordinabile, del bucket
       "macro" di tempo/distanza a cui appartiene la riga, es.
       '003_10-15 min'; vedi etichetta_bucket_discreti), pace_categoria
-      (fascia fissa di passo, da '000_7:00-7:29' a '006_<4:30', vedi
+      (fascia fissa di passo, da '000_>=10:00' a '012_<4:30', vedi
       categoria_passo), e per ogni fonte della modalità speed_<fonte>_kmh
       e pace_<fonte>_min_km (minuti per km, decimali).
     """
