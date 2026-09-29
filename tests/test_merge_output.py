@@ -6,6 +6,7 @@ from openpyxl import Workbook, load_workbook
 
 from milestats.main import (
     _deserializza_valore_csv,
+    aggiungi_colonna_ultima_attivita,
     leggi_righe_export,
     main,
     unisci_output,
@@ -94,9 +95,11 @@ def test_unisci_output_csv(tmp_path, monkeypatch, capsys):
 
     with open(file_merge[0], newline='', encoding='utf-8') as fh:
         righe = list(csv.reader(fh))
-    assert righe[0] == ['id_attivita', 'speed_uff_kmh', 'speed_hav_kmh']
-    assert righe[1] == ['att1', '6.3', '']
-    assert righe[2] == ['att2', '', '7.1']
+    # niente colonna 'timestamp' in questi file sintetici: ultima_attivita
+    # resta vuota per tutti (non può stabilire un ordine temporale)
+    assert righe[0] == ['id_attivita', 'speed_uff_kmh', 'speed_hav_kmh', 'ultima_attivita']
+    assert righe[1] == ['att1', '6.3', '', '']
+    assert righe[2] == ['att2', '', '7.1', '']
 
 
 def test_unisci_output_nessun_file_non_crasha(tmp_path, monkeypatch, capsys):
@@ -149,7 +152,9 @@ def test_cli_merge_output_end_to_end_xlsx(tmp_path, monkeypatch, capsys):
     file_merge = list(cartella_output.glob('merge_*.xlsx'))
     assert len(file_merge) == 1
     ws = load_workbook(file_merge[0]).active
-    assert [c.value for c in ws[1]] == ['id_attivita', 'speed_uff_kmh', 'speed_hav_kmh']
+    assert [c.value for c in ws[1]] == [
+        'id_attivita', 'speed_uff_kmh', 'speed_hav_kmh', 'ultima_attivita',
+    ]
 
 
 @pytest.mark.parametrize("argv_extra", [
@@ -192,3 +197,47 @@ def test_merge_output_preserva_ts_min_attivita_per_attivita(tmp_path, monkeypatc
 
     per_id = {riga['id_attivita']: riga['ts_min_attivita'] for riga in righe}
     assert per_id == {'attA': '2026-01-01 08:00:00', 'attB': '2026-02-02 09:00:00'}
+
+
+def test_aggiungi_colonna_ultima_attivita_marca_solo_la_piu_recente():
+    intestazione = ['id_attivita', 'timestamp']
+    righe = [
+        ['A', datetime(2026, 1, 1, 8, 0, 0)],
+        ['A', datetime(2026, 1, 1, 8, 5, 0)],
+        ['B', datetime(2026, 3, 3, 9, 0, 0)],   # attività più recente (inizia per ultima)
+        ['C', datetime(2025, 12, 31, 7, 0, 0)],
+    ]
+    nuova_intestazione, nuove_righe = aggiungi_colonna_ultima_attivita(intestazione, righe)
+
+    assert nuova_intestazione == ['id_attivita', 'timestamp', 'ultima_attivita']
+    marcatori = {riga[0]: riga[-1] for riga in nuove_righe}
+    # a parità di id_attivita il marcatore è coerente su tutte le righe
+    assert [riga[-1] for riga in nuove_righe if riga[0] == 'A'] == [None, None]
+    assert marcatori == {'A': None, 'B': 'X', 'C': None}
+
+
+def test_aggiungi_colonna_ultima_attivita_nessuna_colonna_id_o_timestamp():
+    intestazione = ['solo_una_colonna']
+    righe = [['x'], ['y']]
+    nuova_intestazione, nuove_righe = aggiungi_colonna_ultima_attivita(intestazione, righe)
+    assert nuova_intestazione == ['solo_una_colonna', 'ultima_attivita']
+    assert nuove_righe == [['x', None], ['y', None]]
+
+
+def test_merge_output_aggiunge_colonna_ultima_attivita(tmp_path, monkeypatch):
+    cartella_output = tmp_path / "data" / "output"
+    cartella_output.mkdir(parents=True)
+    _scrivi_csv(cartella_output / "A.csv", ['id_attivita', 'timestamp'],
+                [['A', '2026-01-01 08:00:00']])
+    _scrivi_csv(cartella_output / "B.csv", ['id_attivita', 'timestamp'],
+                [['B', '2026-03-03 09:00:00'], ['B', '2026-03-03 09:05:00']])
+
+    monkeypatch.chdir(tmp_path)
+    unisci_output('csv')
+
+    file_merge = list(cartella_output.glob('merge_*.csv'))[0]
+    with open(file_merge, newline='', encoding='utf-8') as fh:
+        righe = list(csv.DictReader(fh))
+
+    assert [r['ultima_attivita'] for r in righe if r['id_attivita'] == 'A'] == ['']
+    assert [r['ultima_attivita'] for r in righe if r['id_attivita'] == 'B'] == ['X', 'X']

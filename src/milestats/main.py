@@ -946,18 +946,57 @@ def unisci_righe_export(file_export):
     return intestazione_unione, righe_unione
 
 
+def aggiungi_colonna_ultima_attivita(intestazione, righe):
+    """
+    Aggiunge in coda una colonna 'ultima_attivita' che vale 'X' su tutte le
+    righe dell'attività (id_attivita) più recente in ordine temporale —
+    quella con il timestamp di inizio più alto, cioè il minimo di
+    'timestamp' tra le sue righe, calcolato qui direttamente (non riusa
+    ts_min_attivita, restando valida anche per un file letto senza quella
+    colonna) — e vuota (None) su tutte le altre righe. Se l'intestazione
+    non ha 'id_attivita' o 'timestamp' (non dovrebbe mai capitare per un
+    export prodotto da milestats) la colonna resta vuota per tutte le
+    righe, e se non c'è nessuna riga con un timestamp valido nessuna riga
+    viene marcata.
+    """
+    if 'id_attivita' not in intestazione or 'timestamp' not in intestazione:
+        return intestazione + ['ultima_attivita'], [riga + [None] for riga in righe]
+
+    idx_id = intestazione.index('id_attivita')
+    idx_ts = intestazione.index('timestamp')
+
+    inizio_per_attivita = {}
+    for riga in righe:
+        id_attivita, ts = riga[idx_id], riga[idx_ts]
+        if ts is None:
+            continue
+        if id_attivita not in inizio_per_attivita or ts < inizio_per_attivita[id_attivita]:
+            inizio_per_attivita[id_attivita] = ts
+
+    ultima_attivita = max(inizio_per_attivita, key=inizio_per_attivita.get, default=None)
+
+    nuova_intestazione = intestazione + ['ultima_attivita']
+    nuove_righe = [
+        riga + ['X' if riga[idx_id] == ultima_attivita else None]
+        for riga in righe
+    ]
+    return nuova_intestazione, nuove_righe
+
+
 def unisci_output(formato):
     """
     Legge tutti i file .csv/.xlsx già presenti in data/output/ (prodotti da
     run precedenti di milestats, anche con modalità o colonne diverse tra
     loro) e li accoda in un unico file, con l'unione delle intestazioni
-    (vedi unisci_righe_export). Il file risultante viene scritto nella
-    stessa cartella data/output/ (stessa convenzione di --process-all, che
-    ignora -o/--output-dir e scrive sempre lì), escludendo dalla lettura
-    eventuali file merge_*.csv/.xlsx di un merge precedente, così un nuovo
-    merge non include anche il risultato di quello prima. Un file che non
-    si riesce a leggere viene segnalato su stderr e saltato, senza
-    interrompere gli altri.
+    (vedi unisci_righe_export) e una colonna aggiuntiva ultima_attivita
+    (vedi aggiungi_colonna_ultima_attivita) che vale 'X' sulle righe
+    dell'attività più recente e vuota altrove. Il file risultante viene
+    scritto nella stessa cartella data/output/ (stessa convenzione di
+    --process-all, che ignora -o/--output-dir e scrive sempre lì),
+    escludendo dalla lettura eventuali file merge_*.csv/.xlsx di un merge
+    precedente, così un nuovo merge non include anche il risultato di
+    quello prima. Un file che non si riesce a leggere viene segnalato su
+    stderr e saltato, senza interrompere gli altri.
     """
     cartella_output = Path("data") / "output"
     file_totali = sorted(
@@ -982,6 +1021,7 @@ def unisci_output(formato):
         return
 
     intestazione, righe = unisci_righe_export(file_export)
+    intestazione, righe = aggiungi_colonna_ultima_attivita(intestazione, righe)
 
     formato = normalizza_formato_export(formato) or "csv"
     nome = f"merge_{len(file_letti)}file_{datetime.now(timezone.utc).strftime(FORMATO_TS_FILE)}"

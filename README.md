@@ -215,6 +215,12 @@ dei singoli file letti, che può essere misto csv/xlsx). Un merge
 precedente presente nella cartella (`merge_*.csv`/`.xlsx`) non viene
 riletto come input di un merge successivo.
 
+Il merge aggiunge anche una colonna `ultima_attivita`, che vale `X` su
+tutte le righe dell'attività (`id_attivita`) più recente in ordine
+temporale (quella con il `timestamp` di inizio più alto tra le attività
+unite) e resta vuota su tutte le altre — utile per isolare rapidamente
+l'ultima attività registrata in un file che ne accoda diverse.
+
 `percorso_fit`, `--process-all` e `--id` non sono compatibili con
 `--merge-output`.
 
