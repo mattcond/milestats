@@ -145,14 +145,18 @@ Nome file: `id_tsstart_tsend_tsnow.<csv|xlsx>` con timestamp **UTC** nel formato
 `AAAAMMGGTHHMMSS`: primo e ultimo record dell'attività e momento dell'export.
 Esempio: `1790417339_20260926T092056_20260926T100852_20260928T062546.csv`.
 
-Colonne: `id_attivita`, `timestamp` (inizio bucket), `ts_punto`, `lat`, `lon`,
+Colonne: `id_attivita`, `ts_min_attivita` (il minimo di `timestamp` tra tutte
+le righe con lo stesso `id_attivita`: con un solo export coincide col
+timestamp del primo bucket, ma resta corretto anche dopo un
+`--merge-output` che accoda più attività, per poterle identificare e
+raggruppare), `timestamp` (inizio bucket), `ts_punto`, `lat`, `lon`,
 `dim_bucket_s`, `n_punti`, `dist_m`, `dist_cum_m`, `tempo_bucket_s`,
 `tempo_cum_s`, `time_bucket_idx`, `distance_bucket_idx` (testo nel formato
 `NNN_inizio-fine unità`, vedi sezione dedicata sopra), `pace_categoria`
 (testo, vedi sezione dedicata), poi per ogni fonte della modalità
 `speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km, numerico
-decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri (tranne le tre
-colonne testuali sopra), non testo formattato.
+decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri o date
+(tranne le tre colonne testuali sopra), non testo formattato.
 
 ## Elaborazione in batch (`--process-all`)
 
@@ -210,6 +214,12 @@ nome `merge_<n>file_<timestamp UTC>.<csv|xlsx>` (formato secondo
 dei singoli file letti, che può essere misto csv/xlsx). Un merge
 precedente presente nella cartella (`merge_*.csv`/`.xlsx`) non viene
 riletto come input di un merge successivo.
+
+Il merge aggiunge anche una colonna `ultima_attivita`, che vale `X` su
+tutte le righe dell'attività (`id_attivita`) più recente in ordine
+temporale (quella con il `timestamp` di inizio più alto tra le attività
+unite) e resta vuota su tutte le altre — utile per isolare rapidamente
+l'ultima attività registrata in un file che ne accoda diverse.
 
 `percorso_fit`, `--process-all` e `--id` non sono compatibili con
 `--merge-output`.

@@ -763,12 +763,16 @@ def righe_export(bucket_list, mode, id_attivita):
     per costruzione (vedi formatta_etichetta_bucket e categoria_passo),
     pensati per un pivot/raggruppamento a valle, non per un calcolo
     numerico:
-      id_attivita, timestamp (inizio bucket), ts_punto/lat/lon (primo punto
-      reale del bucket), dim_bucket_s (T), n_punti, dist_m, dist_cum_m,
-      tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s (cumulati
-      fino alla fine del bucket incluso: cumulato = cumulato della riga
-      precedente + valore della riga corrente), time_bucket_idx e
-      distance_bucket_idx (etichetta testuale, ordinabile, del bucket
+      id_attivita, ts_min_attivita (il minimo di timestamp tra tutte le
+      righe con lo stesso id_attivita: qui, con un solo file, coincide col
+      timestamp del primo bucket, ma resta corretto anche dopo un
+      --merge-output che accoda più attività, permettendo di identificarle
+      e raggrupparle), timestamp (inizio bucket), ts_punto/lat/lon (primo
+      punto reale del bucket), dim_bucket_s (T), n_punti, dist_m,
+      dist_cum_m, tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s
+      (cumulati fino alla fine del bucket incluso: cumulato = cumulato
+      della riga precedente + valore della riga corrente), time_bucket_idx
+      e distance_bucket_idx (etichetta testuale, ordinabile, del bucket
       "macro" di tempo/distanza a cui appartiene la riga, es.
       '003_10-15 min'; vedi etichetta_bucket_discreti), pace_categoria
       (fascia fissa di passo, da '000_>=10:00' a '012_<4:30', vedi
@@ -781,8 +785,9 @@ def righe_export(bucket_list, mode, id_attivita):
         'uff': 'speed_ufficiale_bucket_ms',
     }
     sigle = ['dev', 'hav', 'uff'] if mode == 'a' else (['hav'] if mode == 'h' else ['uff'])
+    ts_min_attivita = min(b['timestamp'] for b in bucket_list)
 
-    intestazione = ['id_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
+    intestazione = ['id_attivita', 'ts_min_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
                     'dim_bucket_s', 'n_punti', 'dist_m', 'dist_cum_m',
                     'tempo_bucket_s', 'tempo_cum_s',
                     'time_bucket_idx', 'distance_bucket_idx', 'pace_categoria']
@@ -792,7 +797,7 @@ def righe_export(bucket_list, mode, id_attivita):
     righe = []
     for b in bucket_list:
         riga = [
-            id_attivita, b['timestamp'], b['ts_punto'],
+            id_attivita, ts_min_attivita, b['timestamp'], b['ts_punto'],
             round(b['lat'], 7) if b['lat'] is not None else None,
             round(b['lon'], 7) if b['lon'] is not None else None,
             int(b['dim_bucket_s']) if b['dim_bucket_s'] == int(b['dim_bucket_s']) else b['dim_bucket_s'],
@@ -836,7 +841,8 @@ def esporta(intestazione, righe, formato, cartella, nome_base):
         c.font = Font(bold=True)
     ws.freeze_panes = "A2"
 
-    colonne_ts = [i for i, n in enumerate(intestazione, 1) if n in ('timestamp', 'ts_punto')]
+    colonne_ts = [i for i, n in enumerate(intestazione, 1)
+                  if n in ('timestamp', 'ts_punto', 'ts_min_attivita')]
     for i in colonne_ts:
         for r in range(2, ws.max_row + 1):
             ws.cell(row=r, column=i).number_format = 'yyyy-mm-dd hh:mm:ss'
@@ -940,18 +946,57 @@ def unisci_righe_export(file_export):
     return intestazione_unione, righe_unione
 
 
+def aggiungi_colonna_ultima_attivita(intestazione, righe):
+    """
+    Aggiunge in coda una colonna 'ultima_attivita' che vale 'X' su tutte le
+    righe dell'attività (id_attivita) più recente in ordine temporale —
+    quella con il timestamp di inizio più alto, cioè il minimo di
+    'timestamp' tra le sue righe, calcolato qui direttamente (non riusa
+    ts_min_attivita, restando valida anche per un file letto senza quella
+    colonna) — e vuota (None) su tutte le altre righe. Se l'intestazione
+    non ha 'id_attivita' o 'timestamp' (non dovrebbe mai capitare per un
+    export prodotto da milestats) la colonna resta vuota per tutte le
+    righe, e se non c'è nessuna riga con un timestamp valido nessuna riga
+    viene marcata.
+    """
+    if 'id_attivita' not in intestazione or 'timestamp' not in intestazione:
+        return intestazione + ['ultima_attivita'], [riga + [None] for riga in righe]
+
+    idx_id = intestazione.index('id_attivita')
+    idx_ts = intestazione.index('timestamp')
+
+    inizio_per_attivita = {}
+    for riga in righe:
+        id_attivita, ts = riga[idx_id], riga[idx_ts]
+        if ts is None:
+            continue
+        if id_attivita not in inizio_per_attivita or ts < inizio_per_attivita[id_attivita]:
+            inizio_per_attivita[id_attivita] = ts
+
+    ultima_attivita = max(inizio_per_attivita, key=inizio_per_attivita.get, default=None)
+
+    nuova_intestazione = intestazione + ['ultima_attivita']
+    nuove_righe = [
+        riga + ['X' if riga[idx_id] == ultima_attivita else None]
+        for riga in righe
+    ]
+    return nuova_intestazione, nuove_righe
+
+
 def unisci_output(formato):
     """
     Legge tutti i file .csv/.xlsx già presenti in data/output/ (prodotti da
     run precedenti di milestats, anche con modalità o colonne diverse tra
     loro) e li accoda in un unico file, con l'unione delle intestazioni
-    (vedi unisci_righe_export). Il file risultante viene scritto nella
-    stessa cartella data/output/ (stessa convenzione di --process-all, che
-    ignora -o/--output-dir e scrive sempre lì), escludendo dalla lettura
-    eventuali file merge_*.csv/.xlsx di un merge precedente, così un nuovo
-    merge non include anche il risultato di quello prima. Un file che non
-    si riesce a leggere viene segnalato su stderr e saltato, senza
-    interrompere gli altri.
+    (vedi unisci_righe_export) e una colonna aggiuntiva ultima_attivita
+    (vedi aggiungi_colonna_ultima_attivita) che vale 'X' sulle righe
+    dell'attività più recente e vuota altrove. Il file risultante viene
+    scritto nella stessa cartella data/output/ (stessa convenzione di
+    --process-all, che ignora -o/--output-dir e scrive sempre lì),
+    escludendo dalla lettura eventuali file merge_*.csv/.xlsx di un merge
+    precedente, così un nuovo merge non include anche il risultato di
+    quello prima. Un file che non si riesce a leggere viene segnalato su
+    stderr e saltato, senza interrompere gli altri.
     """
     cartella_output = Path("data") / "output"
     file_totali = sorted(
@@ -976,6 +1021,7 @@ def unisci_output(formato):
         return
 
     intestazione, righe = unisci_righe_export(file_export)
+    intestazione, righe = aggiungi_colonna_ultima_attivita(intestazione, righe)
 
     formato = normalizza_formato_export(formato) or "csv"
     nome = f"merge_{len(file_letti)}file_{datetime.now(timezone.utc).strftime(FORMATO_TS_FILE)}"
