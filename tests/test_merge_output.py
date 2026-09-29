@@ -161,3 +161,34 @@ def test_merge_output_combinazioni_non_ammesse(argv_extra, monkeypatch):
     monkeypatch.setattr('sys.argv', ['milestats'] + argv_extra)
     with pytest.raises(SystemExit):
         main()
+
+
+def test_merge_output_preserva_ts_min_attivita_per_attivita(tmp_path, monkeypatch):
+    # dopo il merge, ts_min_attivita non deve mai mescolarsi tra attività
+    # diverse: ogni riga mantiene il minimo della PROPRIA attività, anche
+    # se accodata a righe di un'altra con un ts_min_attivita differente
+    cartella_output = tmp_path / "data" / "output"
+    cartella_output.mkdir(parents=True)
+    _scrivi_csv(
+        cartella_output / "attA.csv",
+        ['id_attivita', 'ts_min_attivita', 'timestamp'],
+        [
+            ['attA', '2026-01-01 08:00:00', '2026-01-01 08:00:00'],
+            ['attA', '2026-01-01 08:00:00', '2026-01-01 08:05:00'],
+        ],
+    )
+    _scrivi_csv(
+        cartella_output / "attB.csv",
+        ['id_attivita', 'ts_min_attivita', 'timestamp'],
+        [['attB', '2026-02-02 09:00:00', '2026-02-02 09:00:00']],
+    )
+
+    monkeypatch.chdir(tmp_path)
+    unisci_output('csv')
+
+    file_merge = list(cartella_output.glob('merge_*.csv'))[0]
+    with open(file_merge, newline='', encoding='utf-8') as fh:
+        righe = list(csv.DictReader(fh))
+
+    per_id = {riga['id_attivita']: riga['ts_min_attivita'] for riga in righe}
+    assert per_id == {'attA': '2026-01-01 08:00:00', 'attB': '2026-02-02 09:00:00'}

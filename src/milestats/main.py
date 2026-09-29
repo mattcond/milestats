@@ -763,12 +763,16 @@ def righe_export(bucket_list, mode, id_attivita):
     per costruzione (vedi formatta_etichetta_bucket e categoria_passo),
     pensati per un pivot/raggruppamento a valle, non per un calcolo
     numerico:
-      id_attivita, timestamp (inizio bucket), ts_punto/lat/lon (primo punto
-      reale del bucket), dim_bucket_s (T), n_punti, dist_m, dist_cum_m,
-      tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s (cumulati
-      fino alla fine del bucket incluso: cumulato = cumulato della riga
-      precedente + valore della riga corrente), time_bucket_idx e
-      distance_bucket_idx (etichetta testuale, ordinabile, del bucket
+      id_attivita, ts_min_attivita (il minimo di timestamp tra tutte le
+      righe con lo stesso id_attivita: qui, con un solo file, coincide col
+      timestamp del primo bucket, ma resta corretto anche dopo un
+      --merge-output che accoda più attività, permettendo di identificarle
+      e raggrupparle), timestamp (inizio bucket), ts_punto/lat/lon (primo
+      punto reale del bucket), dim_bucket_s (T), n_punti, dist_m,
+      dist_cum_m, tempo_bucket_s (tempo registrato nel bucket), tempo_cum_s
+      (cumulati fino alla fine del bucket incluso: cumulato = cumulato
+      della riga precedente + valore della riga corrente), time_bucket_idx
+      e distance_bucket_idx (etichetta testuale, ordinabile, del bucket
       "macro" di tempo/distanza a cui appartiene la riga, es.
       '003_10-15 min'; vedi etichetta_bucket_discreti), pace_categoria
       (fascia fissa di passo, da '000_>=10:00' a '012_<4:30', vedi
@@ -781,8 +785,9 @@ def righe_export(bucket_list, mode, id_attivita):
         'uff': 'speed_ufficiale_bucket_ms',
     }
     sigle = ['dev', 'hav', 'uff'] if mode == 'a' else (['hav'] if mode == 'h' else ['uff'])
+    ts_min_attivita = min(b['timestamp'] for b in bucket_list)
 
-    intestazione = ['id_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
+    intestazione = ['id_attivita', 'ts_min_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
                     'dim_bucket_s', 'n_punti', 'dist_m', 'dist_cum_m',
                     'tempo_bucket_s', 'tempo_cum_s',
                     'time_bucket_idx', 'distance_bucket_idx', 'pace_categoria']
@@ -792,7 +797,7 @@ def righe_export(bucket_list, mode, id_attivita):
     righe = []
     for b in bucket_list:
         riga = [
-            id_attivita, b['timestamp'], b['ts_punto'],
+            id_attivita, ts_min_attivita, b['timestamp'], b['ts_punto'],
             round(b['lat'], 7) if b['lat'] is not None else None,
             round(b['lon'], 7) if b['lon'] is not None else None,
             int(b['dim_bucket_s']) if b['dim_bucket_s'] == int(b['dim_bucket_s']) else b['dim_bucket_s'],
@@ -836,7 +841,8 @@ def esporta(intestazione, righe, formato, cartella, nome_base):
         c.font = Font(bold=True)
     ws.freeze_panes = "A2"
 
-    colonne_ts = [i for i, n in enumerate(intestazione, 1) if n in ('timestamp', 'ts_punto')]
+    colonne_ts = [i for i, n in enumerate(intestazione, 1)
+                  if n in ('timestamp', 'ts_punto', 'ts_min_attivita')]
     for i in colonne_ts:
         for r in range(2, ws.max_row + 1):
             ws.cell(row=r, column=i).number_format = 'yyyy-mm-dd hh:mm:ss'

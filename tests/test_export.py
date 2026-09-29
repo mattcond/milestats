@@ -24,7 +24,7 @@ def _bucket_list(punti_sintetici, mode='a'):
 def test_righe_export_intestazione_modalita_a(punti_sintetici):
     bucket_list = _bucket_list(punti_sintetici, mode='a')
     intestazione, righe = righe_export(bucket_list, 'a', 'id123')
-    assert intestazione[:2] == ['id_attivita', 'timestamp']
+    assert intestazione[:3] == ['id_attivita', 'ts_min_attivita', 'timestamp']
     assert 'time_bucket_idx' in intestazione
     assert 'distance_bucket_idx' in intestazione
     assert 'pace_categoria' in intestazione
@@ -33,6 +33,11 @@ def test_righe_export_intestazione_modalita_a(punti_sintetici):
         assert f'pace_{sigla}_min_km' in intestazione
     assert len(righe) == len(bucket_list)
     assert all(riga[0] == 'id123' for riga in righe)
+    # ts_min_attivita è costante su tutte le righe: qui, con un solo
+    # "export" sintetico, coincide col timestamp del primo bucket
+    idx_ts_min = intestazione.index('ts_min_attivita')
+    idx_timestamp = intestazione.index('timestamp')
+    assert {riga[idx_ts_min] for riga in righe} == {righe[0][idx_timestamp]}
 
 
 def test_righe_export_modalita_s_solo_colonne_uff(punti_sintetici):
