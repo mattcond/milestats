@@ -126,12 +126,16 @@ finestra, non come media dei bucket fini) che rispondono direttamente a
 """
 
 import argparse
+import bisect
 import calendar
 import csv
 import hashlib
+import json
 import re
 import shutil
 import sys
+import urllib.parse
+import urllib.request
 from datetime import datetime, timedelta, timezone
 from math import radians, sin, cos, sqrt, atan2
 from pathlib import Path
@@ -735,6 +739,185 @@ def leggi_id_attivita(percorso_file):
 
 
 # ----------------------------------------------------------------------
+# Meteo (--weather): dati storici Open-Meteo sul centroide dell'attività,
+# campionati ogni 15 minuti tra inizio e fine
+# ----------------------------------------------------------------------
+OPEN_METEO_URL = "https://archive-api.open-meteo.com/v1/archive"
+
+# Variabili orarie richieste all'API storica di Open-Meteo
+OPEN_METEO_VARIABILI = [
+    'temperature_2m', 'precipitation', 'relative_humidity_2m', 'wind_speed_10m', 'weather_code',
+]
+
+# Codici meteo WMO usati da Open-Meteo (campo weather_code della risposta)
+WMO_METEO_DESCRIZIONI = {
+    0: "cielo sereno", 1: "prevalentemente sereno", 2: "parzialmente nuvoloso",
+    3: "coperto", 45: "nebbia", 48: "nebbia con brina",
+    51: "pioviggine leggera", 53: "pioviggine moderata", 55: "pioviggine intensa",
+    56: "pioviggine gelata leggera", 57: "pioviggine gelata intensa",
+    61: "pioggia leggera", 63: "pioggia moderata", 65: "pioggia intensa",
+    66: "pioggia gelata leggera", 67: "pioggia gelata intensa",
+    71: "nevicata leggera", 73: "nevicata moderata", 75: "nevicata intensa",
+    77: "granuli di neve",
+    80: "rovesci di pioggia leggeri", 81: "rovesci di pioggia moderati",
+    82: "rovesci di pioggia violenti",
+    85: "rovesci di neve leggeri", 86: "rovesci di neve intensi",
+    95: "temporale", 96: "temporale con grandine leggera", 99: "temporale con grandine intensa",
+}
+
+
+def descrizione_meteo(codice):
+    """Descrizione testuale (italiano) di un codice meteo WMO, None se codice è None."""
+    if codice is None:
+        return None
+    return WMO_METEO_DESCRIZIONI.get(int(codice), f"codice {int(codice)}")
+
+
+def centroide_coordinate(punti):
+    """
+    Centroide (lat, lon) delle coordinate GPS dell'attività: media
+    aritmetica di lat/lon su tutti i punti che hanno una posizione. Ritorna
+    (None, None) se nessun punto ha coordinate.
+    """
+    coordinate = [(p['lat'], p['lon']) for p in punti if 'lat' in p]
+    if not coordinate:
+        return None, None
+    lat_medio = sum(c[0] for c in coordinate) / len(coordinate)
+    lon_medio = sum(c[1] for c in coordinate) / len(coordinate)
+    return lat_medio, lon_medio
+
+
+def campiona_timestamp_meteo(ts_start, ts_end, passo_min=15):
+    """
+    Timestamp da interrogare per il meteo: ts_start, poi ogni passo_min
+    minuti (default 15) fino a (escluso) ts_end, poi ts_end stesso —
+    sempre incluso, anche quando non cade su un multiplo di passo_min a
+    partire da ts_start. Se ts_start == ts_end ritorna un solo campione.
+    """
+    passo = timedelta(minutes=passo_min)
+    campioni = [ts_start]
+    corrente = ts_start + passo
+    while corrente < ts_end:
+        campioni.append(corrente)
+        corrente += passo
+    if campioni[-1] != ts_end:
+        campioni.append(ts_end)
+    return campioni
+
+
+def chiama_open_meteo(lat, lon, ts_start, ts_end, timeout=15):
+    """
+    Interroga l'archivio storico di Open-Meteo (dati orari, non ha bisogno
+    di una chiave API) per le variabili in OPEN_METEO_VARIABILI, sul punto
+    (lat, lon), per l'intervallo di date [ts_start.date(), ts_end.date()]
+    in UTC (coerente con i timestamp naive-UTC che fitparse restituisce).
+    Ritorna il JSON della risposta già decodificato.
+
+    Solleva urllib.error.URLError/HTTPError, OSError (es. timeout) o
+    ValueError (risposta non JSON) in caso di problemi: il chiamante
+    decide come reagire (qui: --weather stampa un avviso su stderr e
+    prosegue senza dati meteo, vedi elabora()).
+
+    NOTA: l'archivio storico ha un ritardo di alcuni giorni prima di
+    rendere disponibili i dati più recenti; per un'attività molto recente
+    la risposta può non contenere ancora le ore richieste (vedi
+    estrai_meteo_campioni, che in quel caso lascia i valori a None).
+    """
+    parametri = {
+        'latitude': f"{lat:.5f}",
+        'longitude': f"{lon:.5f}",
+        'start_date': ts_start.date().isoformat(),
+        'end_date': ts_end.date().isoformat(),
+        'hourly': ','.join(OPEN_METEO_VARIABILI),
+        'timezone': 'UTC',
+    }
+    url = f"{OPEN_METEO_URL}?{urllib.parse.urlencode(parametri)}"
+    with urllib.request.urlopen(url, timeout=timeout) as risposta:
+        return json.loads(risposta.read().decode('utf-8'))
+
+
+def estrai_meteo_campioni(risposta, campioni):
+    """
+    Per ogni timestamp in campioni (vedi campiona_timestamp_meteo), estrae
+    dalla risposta di chiama_open_meteo il dato ORARIO dell'ora a cui
+    appartiene: i valori di Open-Meteo sono orari, quindi più campioni da
+    15 minuti nella stessa ora riportano lo stesso dato — è quanto di
+    disponibile nella risposta per quel campione. Se un'ora richiesta non
+    è presente nella risposta (dati non ancora disponibili, vedi
+    chiama_open_meteo) i valori per quel campione sono tutti None.
+
+    Ritorna una lista di dict, uno per campione (stesso ordine), con
+    chiavi: timestamp, temperatura_c, precipitazioni_mm, umidita_pct,
+    vento_kmh, meteo_codice, meteo_descrizione.
+    """
+    orario = risposta.get('hourly', {})
+    indice_ora = {ora: i for i, ora in enumerate(orario.get('time', []))}
+
+    def valore(nome_variabile, indice):
+        if indice is None:
+            return None
+        valori = orario.get(nome_variabile)
+        return valori[indice] if valori is not None and indice < len(valori) else None
+
+    risultati = []
+    for ts in campioni:
+        chiave_ora = ts.replace(minute=0, second=0, microsecond=0).strftime('%Y-%m-%dT%H:%M')
+        i = indice_ora.get(chiave_ora)
+        codice = valore('weather_code', i)
+        risultati.append({
+            'timestamp': ts,
+            'temperatura_c': valore('temperature_2m', i),
+            'precipitazioni_mm': valore('precipitation', i),
+            'umidita_pct': valore('relative_humidity_2m', i),
+            'vento_kmh': valore('wind_speed_10m', i),
+            'meteo_codice': codice,
+            'meteo_descrizione': descrizione_meteo(codice),
+        })
+    return risultati
+
+
+def etichetta_meteo_bucket(bucket_list, campioni_meteo):
+    """
+    Assegna a ogni bucket fine il dato meteo del campione da 15 minuti (fra
+    quelli di campioni_meteo, ordinati per timestamp crescente) il cui
+    timestamp è il più recente non successivo a quello del bucket — cioè
+    il campione la cui finestra [campione, campione successivo) contiene
+    il timestamp del bucket. Poiché campioni_meteo copre sempre [inizio,
+    fine] dell'intera attività, per ogni bucket ne esiste sempre uno.
+    Aggiunge a ogni bucket i campi meteo_temperatura_c,
+    meteo_precipitazioni_mm, meteo_umidita_pct, meteo_vento_kmh,
+    meteo_codice, meteo_descrizione.
+    """
+    timestamp_campioni = [c['timestamp'] for c in campioni_meteo]
+    for b in bucket_list:
+        idx = bisect.bisect_right(timestamp_campioni, b['timestamp']) - 1
+        idx = max(0, min(idx, len(campioni_meteo) - 1))
+        campione = campioni_meteo[idx]
+        b['meteo_temperatura_c'] = campione['temperatura_c']
+        b['meteo_precipitazioni_mm'] = campione['precipitazioni_mm']
+        b['meteo_umidita_pct'] = campione['umidita_pct']
+        b['meteo_vento_kmh'] = campione['vento_kmh']
+        b['meteo_codice'] = campione['meteo_codice']
+        b['meteo_descrizione'] = campione['meteo_descrizione']
+    return bucket_list
+
+
+def stampa_meteo(campioni_meteo, lat, lon):
+    """Stampa a schermo la tabella meteo campionata ogni 15 minuti."""
+    def fmt(v, dec=1):
+        return f"{v:.{dec}f}" if v is not None else "N/D"
+
+    print()
+    print(f"Meteo (Open-Meteo, campionato ogni 15 min, centroide attività {lat:.5f},{lon:.5f}):")
+    print(f"{'Timestamp':<21} {'Temp. (°C)':<11} {'Precip. (mm)':<13} "
+          f"{'Umidità (%)':<12} {'Vento (km/h)':<13} {'Condizione':<25}")
+    for c in campioni_meteo:
+        print(f"{str(c['timestamp']):<21} {fmt(c['temperatura_c']):<11} "
+              f"{fmt(c['precipitazioni_mm']):<13} {fmt(c['umidita_pct'], 0):<12} "
+              f"{fmt(c['vento_kmh']):<13} {(c['meteo_descrizione'] or 'N/D'):<25}")
+
+
+# ----------------------------------------------------------------------
 # Export CSV / Excel
 # ----------------------------------------------------------------------
 FORMATO_TS_FILE = "%Y%m%dT%H%M%S"
@@ -776,8 +959,12 @@ def righe_export(bucket_list, mode, id_attivita):
       "macro" di tempo/distanza a cui appartiene la riga, es.
       '003_10-15 min'; vedi etichetta_bucket_discreti), pace_categoria
       (fascia fissa di passo, da '000_>=10:00' a '012_<4:30', vedi
-      categoria_passo), e per ogni fonte della modalità speed_<fonte>_kmh
-      e pace_<fonte>_min_km (minuti per km, decimali).
+      categoria_passo), le colonne meteo_* (solo se il bucket le ha, cioè
+      se elabora() è stata chiamata con weather=True, vedi
+      etichetta_meteo_bucket): meteo_temperatura_c, meteo_precipitazioni_mm,
+      meteo_umidita_pct, meteo_vento_kmh, meteo_codice, meteo_descrizione
+      (testo), e infine per ogni fonte della modalità speed_<fonte>_kmh e
+      pace_<fonte>_min_km (minuti per km, decimali).
     """
     campi = {
         'dev': 'speed_device_media_ms',
@@ -786,11 +973,15 @@ def righe_export(bucket_list, mode, id_attivita):
     }
     sigle = ['dev', 'hav', 'uff'] if mode == 'a' else (['hav'] if mode == 'h' else ['uff'])
     ts_min_attivita = min(b['timestamp'] for b in bucket_list)
+    ha_meteo = bool(bucket_list) and 'meteo_temperatura_c' in bucket_list[0]
 
     intestazione = ['id_attivita', 'ts_min_attivita', 'timestamp', 'ts_punto', 'lat', 'lon',
                     'dim_bucket_s', 'n_punti', 'dist_m', 'dist_cum_m',
                     'tempo_bucket_s', 'tempo_cum_s',
                     'time_bucket_idx', 'distance_bucket_idx', 'pace_categoria']
+    if ha_meteo:
+        intestazione += ['meteo_temperatura_c', 'meteo_precipitazioni_mm', 'meteo_umidita_pct',
+                          'meteo_vento_kmh', 'meteo_codice', 'meteo_descrizione']
     for sg in sigle:
         intestazione += [f'speed_{sg}_kmh', f'pace_{sg}_min_km']
 
@@ -806,6 +997,15 @@ def righe_export(bucket_list, mode, id_attivita):
             round(b['tempo_cum_s'], 3),
             b['time_bucket_idx'], b['distance_bucket_idx'], b['pace_categoria'],
         ]
+        if ha_meteo:
+            riga += [
+                round(b['meteo_temperatura_c'], 1) if b['meteo_temperatura_c'] is not None else None,
+                round(b['meteo_precipitazioni_mm'], 2) if b['meteo_precipitazioni_mm'] is not None else None,
+                b['meteo_umidita_pct'],
+                round(b['meteo_vento_kmh'], 1) if b['meteo_vento_kmh'] is not None else None,
+                int(b['meteo_codice']) if b['meteo_codice'] is not None else None,
+                b['meteo_descrizione'],
+            ]
         for sg in sigle:
             v = b[campi[sg]]
             riga += [round(ms_a_kmh(v), 3), round(ms_a_pace(v), 3) if v > 0 else None]
@@ -1056,12 +1256,19 @@ def formatta_pace(min_per_km):
 # Elaborazione di un singolo file .fit (stampa + export opzionale)
 # ----------------------------------------------------------------------
 def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
-            id_attivita_arg, export_formato, output_dir):
+            id_attivita_arg, export_formato, output_dir, weather=False):
     """
     Esegue l'analisi completa di un file .fit (lettura, calcolo velocità,
     aggregazione per bucket, stampa a schermo) e, se export_formato non è
     None, esporta la tabella per bucket in output_dir. Ritorna il percorso
     del file esportato, o None se export_formato è None.
+
+    Se weather è True interroga Open-Meteo (vedi chiama_open_meteo) sul
+    centroide delle coordinate GPS dell'attività, campionando ogni 15
+    minuti tra il primo e l'ultimo timestamp, e aggiunge le colonne
+    meteo_* a ogni bucket e all'export. Un problema di rete/API non
+    interrompe l'elaborazione: viene stampato un avviso su stderr e si
+    prosegue senza dati meteo.
 
     Solleva ValueError se il file non contiene record validi o se nessun
     record cade dentro le finestre attive del timer, così il chiamante
@@ -1084,6 +1291,24 @@ def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
         bucket_list, time_bucket_min, distance_bucket_m,
     )
     bucket_list = etichetta_categoria_passo(bucket_list, mode)
+
+    campioni_meteo = None
+    if weather:
+        lat_centroide, lon_centroide = centroide_coordinate(punti)
+        if lat_centroide is None:
+            print("Meteo: nessuna posizione GPS nell'attività, "
+                  "impossibile calcolare il centroide.", file=sys.stderr)
+        else:
+            ts_start, ts_end = punti[0]['timestamp'], punti[-1]['timestamp']
+            campioni_ts = campiona_timestamp_meteo(ts_start, ts_end)
+            try:
+                risposta_meteo = chiama_open_meteo(lat_centroide, lon_centroide, ts_start, ts_end)
+                campioni_meteo = estrai_meteo_campioni(risposta_meteo, campioni_ts)
+                bucket_list = etichetta_meteo_bucket(bucket_list, campioni_meteo)
+            except Exception as e:
+                print(f"Meteo: chiamata a Open-Meteo fallita ({e}), "
+                      "colonne meteo non disponibili.", file=sys.stderr)
+                campioni_meteo = None
 
     if id_attivita_arg:
         id_attivita, fonte_id = id_attivita_arg, "argomento --id"
@@ -1168,6 +1393,9 @@ def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
 
     stampa_analisi_bucket_discreti(bucket_list, mode, time_bucket_min, distance_bucket_m)
 
+    if campioni_meteo is not None:
+        stampa_meteo(campioni_meteo, lat_centroide, lon_centroide)
+
     if export_formato is None:
         return None
 
@@ -1189,14 +1417,16 @@ def elabora(percorso_fit, mode, intervallo, time_bucket_min, distance_bucket_m,
 # --process-all: elabora tutti i file .fit di data/, esporta in
 # data/output e sposta i .fit elaborati in data/processed
 # ----------------------------------------------------------------------
-def elabora_tutti(mode, intervallo, time_bucket_min, distance_bucket_m, export_formato):
+def elabora_tutti(mode, intervallo, time_bucket_min, distance_bucket_m, export_formato, weather=False):
     """
     Cerca tutti i file .fit in data/ (non ricorsivo), li elabora uno alla
     volta con elabora() esportando sempre il risultato (formato csv se
     export_formato non è specificato) in data/output, e sposta ogni file
     .fit elaborato con successo in data/processed. Un file che fallisce
     l'elaborazione (es. nessun record valido) viene segnalato e lasciato
-    in data/, così da non perdere l'originale.
+    in data/, così da non perdere l'originale. Se weather è True interroga
+    Open-Meteo per ogni file (vedi elabora()): una chiamata fallita non fa
+    fallire l'elaborazione del file, solo le colonne meteo non compaiono.
     """
     cartella_data = Path("data")
     cartella_output = cartella_data / "output"
@@ -1214,7 +1444,7 @@ def elabora_tutti(mode, intervallo, time_bucket_min, distance_bucket_m, export_f
         print(f"=== {percorso.name} ===")
         try:
             elabora(str(percorso), mode, intervallo, time_bucket_min, distance_bucket_m,
-                    None, formato, str(cartella_output))
+                    None, formato, str(cartella_output), weather=weather)
         except ValueError as e:
             print(f"Errore: {e} File lasciato in {cartella_data}/.", file=sys.stderr)
             n_errori += 1
@@ -1317,6 +1547,16 @@ def main():
              "--export (csv se non specificato). In questa modalità percorso_fit, "
              "--process-all e --id non vanno indicati",
     )
+    parser.add_argument(
+        "--weather",
+        action="store_true",
+        help="Interroga l'archivio storico di Open-Meteo (dati orari, nessuna chiave "
+             "API richiesta) sul centroide delle coordinate GPS dell'attività, "
+             "campionando ogni 15 minuti tra il primo e l'ultimo timestamp, e aggiunge "
+             "le colonne meteo_* a schermo e nell'export. Richiede una connessione di "
+             "rete; se la chiamata fallisce viene stampato un avviso e l'elaborazione "
+             "prosegue senza dati meteo. Non è compatibile con --merge-output",
+    )
     args = parser.parse_args()
     mode = args.mode
 
@@ -1331,18 +1571,22 @@ def main():
         parser.error("--id non è compatibile con --process-all o --merge-output")
     if not any(modalita_esclusive):
         parser.error("specificare un percorso_fit, --process-all oppure --merge-output")
+    if args.weather and args.merge_output:
+        parser.error("--weather non è compatibile con --merge-output")
 
     if args.merge_output:
         unisci_output(args.export)
         return
 
     if args.process_all:
-        elabora_tutti(mode, args.intervallo, args.time_bucket_min, args.distance_bucket_m, args.export)
+        elabora_tutti(mode, args.intervallo, args.time_bucket_min, args.distance_bucket_m,
+                      args.export, weather=args.weather)
         return
 
     try:
         elabora(args.percorso_fit, mode, args.intervallo, args.time_bucket_min,
-                args.distance_bucket_m, args.id_attivita, args.export, args.output_dir)
+                args.distance_bucket_m, args.id_attivita, args.export, args.output_dir,
+                weather=args.weather)
     except ValueError as e:
         print(str(e), file=sys.stderr)
         sys.exit(1)
