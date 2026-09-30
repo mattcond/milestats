@@ -153,7 +153,8 @@ raggruppare), `timestamp` (inizio bucket), `ts_punto`, `lat`, `lon`,
 `dim_bucket_s`, `n_punti`, `dist_m`, `dist_cum_m`, `tempo_bucket_s`,
 `tempo_cum_s`, `time_bucket_idx`, `distance_bucket_idx` (testo nel formato
 `NNN_inizio-fine unità`, vedi sezione dedicata sopra), `pace_categoria`
-(testo, vedi sezione dedicata), poi per ogni fonte della modalità
+(testo, vedi sezione dedicata), le colonne `meteo_*` (solo con `--weather`,
+vedi sezione dedicata), poi per ogni fonte della modalità
 `speed_<fonte>_kmh` e `pace_<fonte>_min_km` (minuti per km, numerico
 decimale: es. 9:05 min/km = 9,083). I valori sono numeri veri o date
 (tranne le tre colonne testuali sopra), non testo formattato.
@@ -220,6 +221,45 @@ tutte le righe dell'attività (`id_attivita`) più recente in ordine
 temporale (quella con il `timestamp` di inizio più alto tra le attività
 unite) e resta vuota su tutte le altre — utile per isolare rapidamente
 l'ultima attività registrata in un file che ne accoda diverse.
+
+## Dati meteo (`--weather`)
+
+```bash
+uv run milestats data/Corsa_dell_ora_di_pranzo.fit --weather
+uv run milestats --process-all --weather
+```
+
+Interroga l'[archivio storico di Open-Meteo](https://open-meteo.com/) (dati
+orari, nessuna chiave API richiesta) e aggiunge le condizioni meteo
+all'attività:
+
+- **Punto**: il centroide (media aritmetica di lat/lon) di tutte le
+  posizioni GPS registrate nell'attività.
+- **Timestamp interrogati**: il timestamp di inizio attività, poi ogni 15
+  minuti, poi il timestamp di fine attività (sempre incluso, anche se non
+  cade su un multiplo di 15 minuti dall'inizio).
+- **Dati riportati**: temperatura (°C), precipitazioni (mm), umidità (%),
+  vento (km/h) e condizione (testo, dal codice meteo WMO). L'API di
+  Open-Meteo fornisce questi dati con risoluzione **oraria**: più campioni
+  da 15 minuti nella stessa ora riportano lo stesso dato, che è quanto di
+  disponibile per quell'ora.
+
+Ogni riga di dettaglio (e dell'export) riceve il dato meteo del campione da
+15 minuti in cui cade il suo timestamp, in nuove colonne `meteo_temperatura_c`,
+`meteo_precipitazioni_mm`, `meteo_umidita_pct`, `meteo_vento_kmh`,
+`meteo_codice`, `meteo_descrizione` (aggiunte solo se `--weather` è
+specificato); a schermo viene inoltre stampata una tabella con tutti i
+campioni da 15 minuti dell'attività.
+
+Richiede una connessione di rete verso `archive-api.open-meteo.com`. Se la
+chiamata fallisce (rete assente, host non raggiungibile, ecc.) viene
+stampato un avviso su stderr e l'elaborazione prosegue normalmente, senza
+colonne meteo. Attività molto recenti potrebbero non avere ancora dati
+disponibili nell'archivio storico (che ha un ritardo tipico di alcuni
+giorni): in quel caso i valori meteo restano vuoti/`N/D`.
+
+`--weather` non è compatibile con `--merge-output` (che non elabora alcun
+file `.fit`, quindi non ha nulla da interrogare).
 
 `percorso_fit`, `--process-all` e `--id` non sono compatibili con
 `--merge-output`.
